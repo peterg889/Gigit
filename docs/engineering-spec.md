@@ -26,39 +26,46 @@
 | K5 | **Append-only `events` table (outbox + audit + analytics) from day one.** Every domain event (state transitions, messages, AI decisions, money intents) is a row; consumers (webhooks out, notification fan-out, the future warehouse) read from it. | PRD requires audit (disputes, F7.4), the ROI loop needs historical baselines from MVP (F8.5), and analytics shouldn't require instrumentation archaeology later. | High to retrofit, trivial to start |
 | K6 | **Phone-first passwordless auth** (SMS OTP, email magic-link fallback). Sessions via secure cookies; no passwords ever stored. | SMS is a first-class product surface (F2.8); venue managers are phone people; passwords are support debt. | Low |
 | K7 | **Contracts = versioned click-wrap, not e-signature SaaS.** Agreement text rendered from booking terms + template version; both parties accept in-flow; acceptance event (user, IP, timestamp, template hash) recorded. No DocuSign. | Click-wrap with audit trail is legally sufficient for these agreement values; e-sign SaaS adds cost and flow friction. | Low (can add e-sign for high-value bookings later) |
-| K8 | **No video hosting at MVP.** Profiles embed YouTube/Instagram/Bandcamp links; we store only images (R2/S3 + CDN). Auto-generated highlight reels (F-AI.8) come later and will use a transcode service when they do. | Video infra is a money pit orthogonal to liquidity. | Low |
+| K8 | **Native media hosting: S3 + CloudFront + MediaConvert pipeline (§8).** Performers upload photos, audio tracks, and video clips directly; external YouTube/Bandcamp links remain supported but optional. Strict per-profile quotas keep storage/egress bounded. | Profiles are the storefront; a self-contained EPK removes dependence on third-party embeds (broken links, ads, tracking) and feeds F-AI.8 (highlight reels, audio embeddings) from assets we control. | Medium |
 | K9 | **All LLM use flows through one internal `ai` module** ("AI gateway"): task registry, repo-versioned prompts, zod-validated structured outputs, per-task model routing, full I/O logging to `events`, cost metering, golden-set eval harness in CI. No ad-hoc model calls anywhere else in the codebase. | Centralizes safety (injection surface, output validation), cost control, and the PRD's draft-never-publish invariant; makes model swaps a config change. | High to retrofit |
 | K10 | **Single region, single metro-aware schema.** Every domain row carries `metro_id`; no per-metro databases, no sharding. | Metro #2 must be an INSERT, not a deployment. | Low |
+| K11 | **AWS-native infrastructure, IaC in CDK (TypeScript).** ECS Fargate (web + worker) behind ALB + CloudFront, RDS Postgres (Multi-AZ in prod), S3 + MediaConvert, SES, Secrets Manager, CloudWatch; staging and production in separate AWS accounts; GitHub Actions deploys via OIDC (no long-lived keys). | One cloud, one IaC language (same as the app); the media pipeline gets first-party primitives (S3 events → MediaConvert); AWS is the platform least likely to need migrating off. App Runner is the documented fallback if Fargate ops overhead annoys early. | Medium — contained by IaC |
 
 ## 3. System overview
 
 ```
-                ┌────────────────────────── Vercel/equivalent ─────────────────────────┐
-                │  Next.js app (mobile-first web + PWA)                                 │
+                     CloudFront (CDN: app assets + public profile media)
+                                            │
+                ┌───────────────────────────▼──── ALB (AWS) ────────────────────────────┐
+                │  Web service — Next.js (mobile-first web + PWA) on ECS Fargate        │
    Performers   │   • feeds, profiles, slot mgmt, booking flows, review queues          │
-   Venues   ───▶│   • API routes (reads, simple writes)                                 │
+   Venues   ───▶│   • API routes (reads, simple writes); presigned S3 upload grants     │
    Techs        └───────────────┬───────────────────────────────────────────────────────┘
                                 │ writes that matter → enqueue/transition via domain pkg
                 ┌───────────────▼───────────────────────────────────────────────────────┐
-                │  Worker service (Node, Fly/Render)                                    │
+                │  Worker service — Node on ECS Fargate                                 │
                 │   • pg-boss consumers: notifications, AI tasks, payment ops,          │
-                │     scheduled jobs (release T+24h, slot expiry, reminders)            │
+                │     media pipeline, scheduled jobs (release T+24h, expiry, reminders) │
                 │   • webhook receivers: Stripe, Twilio (signature-verified, idempotent)│
                 │   • outbox dispatcher: events → notifications / external webhooks     │
                 └───────────────┬───────────────────────────────────────────────────────┘
                                 │
-        ┌───────────────────────▼────────────────────────┐      ┌──────────────────────┐
-        │  Postgres (managed)                            │      │  External services    │
-        │   schema: identity | profiles | marketplace |  │      │   Stripe Connect      │
-        │           booking | money | comms | ai | events│      │   Twilio (SMS)        │
-        │   extensions: PostGIS, pgvector, pg_trgm       │      │   Anthropic API (AI)  │
-        │   pg-boss job tables                           │      │   R2/S3 + CDN (media) │
-        └────────────────────────────────────────────────┘      │   Resend (email)      │
-                                                                │   Sentry (errors)     │
-                                                                └──────────────────────┘
+        ┌───────────────────────▼────────────────────────┐   ┌───────────────────────────┐
+        │  RDS Postgres (Multi-AZ in prod)               │   │  AWS managed               │
+        │   schema: identity | profiles | marketplace |  │   │   S3 (media, docs, backups)│
+        │           booking | money | comms | ai | events│   │   MediaConvert (transcode) │
+        │   extensions: PostGIS, pgvector, pg_trgm       │   │   SES (email)              │
+        │   pg-boss job tables                           │   │   Secrets Mgr, CloudWatch  │
+        └────────────────────────────────────────────────┘   ├───────────────────────────┤
+                                                             │  External                  │
+                                                             │   Stripe Connect           │
+                                                             │   Twilio (SMS)             │
+                                                             │   Anthropic API (AI)       │
+                                                             │   Sentry (errors)          │
+                                                             └───────────────────────────┘
 ```
 
-Deploy: two deployables (web, worker) + one database + object storage. CI on GitHub Actions: typecheck, unit/property tests, state-machine exhaustiveness check, AI golden-set evals, migration dry-run; preview envs per PR; `main` → staging → manual-promote production.
+Deploy: all infrastructure on AWS, defined in **CDK (TypeScript)** — two ECS Fargate services (web, worker), ALB + CloudFront, RDS Postgres, S3 + MediaConvert, SES, Secrets Manager, CloudWatch; staging and production in separate AWS accounts. CI on GitHub Actions (OIDC into AWS, no long-lived keys): typecheck, unit/property tests, state-machine exhaustiveness check, AI golden-set evals, migration dry-run; `cdk deploy` to staging on merge → manual-promote to production.
 
 ## 4. Domain model (core tables, abridged)
 
@@ -71,12 +78,16 @@ performers       (id, kind: band|solo|comedian|other, name, bio, genre_tags[],
                   set_lengths[], tech_needs jsonb, media_links jsonb,
                   profile_source: manual|ai_ingested, status: draft|pending_review|live)
 band_members     (performer_id, user_id, role, payout_split_bps)         -- splits are P1; column ships day one (K3)
-venues           (id, metro_id, kind, name, geo point, capacity, room jsonb,
+venues           (id, metro_id, kind, name, bio, geo point, capacity, room jsonb,
                   pa_inventory jsonb,                                     -- structured per F1.3/F6.6
                   hospitality jsonb, noise_curfew, booking_user_ids[])
-techs            (id, user_id, gear: none|partial|full_rig, rig_specs jsonb,
+techs            (id, user_id, bio, gear: none|partial|full_rig, rig_specs jsonb,
                   rate_labor, rate_with_rig, travel_radius_km)
 coi_documents    (id, owner_role_id, file, insurer, expires_on, verified_by)
+media_assets     (id, owner_role_id, kind: image|audio|video, s3_key, bytes, duration_s,
+                  status: uploaded|processing|ready|rejected,
+                  renditions jsonb {hls, aac, posters[], waveform, responsive[]},
+                  fraud_screen_ref, position int)                         -- §8 pipeline; profile ordering
 
 -- marketplace --------------------------------------------------------------
 slot_series      (id, venue_id, recurrence rule, defaults jsonb, status)
@@ -101,7 +112,7 @@ ledger_entries   (id, booking_id?, entry_type: charge|hold|release|refund|fee|ad
                   created_at, idempotency_key UNIQUE)                         -- append-only, no UPDATE/DELETE
 
 -- comms ----------------------------------------------------------------------
-threads          (id, scope: application|booking|support, participant_role_ids[])
+threads          (id, scope: inquiry|application|booking|support, participant_role_ids[])
 messages         (id, thread_id, sender_role_id?, ai_generated bool, body, channel: app|sms|email)
 sms_sessions     (phone, active_context jsonb)                                -- conversational state for F2.8
 
@@ -166,9 +177,21 @@ soundPlan(venuePA, performerNeeds) → { verdict: covered | tech_needed | tech_a
 ```
 
 - Verdict drives slot UX ("this gig needs sound — add a tech sub-slot?") and the tech brief (F-AI.12: the brief is a *template over structured data*, with an LLM polish pass that cannot alter facts).
-- The AI's only role in this subsystem is **extraction**: photo/free-text → draft `pa_inventory`/`tech_needs` JSON (task `gear_extract`, §8), human-confirmed before the engine consumes it. Confidence below threshold → field left empty and asked explicitly. Garbage-in is the engine's only failure mode, so extraction review UX is part of this feature, not separate.
+- The AI's only role in this subsystem is **extraction**: photo/free-text → draft `pa_inventory`/`tech_needs` JSON (task `gear_extract`, §9), human-confirmed before the engine consumes it. Confidence below threshold → field left empty and asked explicitly. Garbage-in is the engine's only failure mode, so extraction review UX is part of this feature, not separate.
 
-## 8. AI subsystem (the gateway — K9)
+## 8. Media pipeline (native hosting of photos, audio, video — K8)
+
+Profiles are the storefront: performers (and venues, for room photos) upload media directly; we host and serve it.
+
+- **Upload:** browser → presigned S3 POST, constrained by kind (content-type, max size) and by remaining profile quota; uploads never transit our servers.
+- **Processing (worker jobs off S3 events):** images → EXIF-strip + responsive renditions; audio → AAC + waveform JSON; video → MediaConvert HLS ladder (720p ceiling at MVP) + poster frames. `media_assets.status`: uploaded → processing → ready | rejected.
+- **Screening before visibility:** every asset runs `media_fraud_screen` (F7.5) plus virus scan and content-type sniffing during processing; nothing is publicly served until `ready`.
+- **Delivery:** CloudFront over S3 — public cache paths for profile media, signed URLs for private documents (COIs, stage plots).
+- **Quotas (cost containment, config-driven):** per profile ≈ 20 photos, 10 audio tracks (≤15 min each), 5 video clips (≤5 min each); hard per-file size caps enforced at presign time. Raised when revenue justifies.
+- **Lifecycle:** S3 versioning; lifecycle rules purge abandoned multipart uploads and rejected assets (30 days); deletes cascade from profile edits and account deletion (§11).
+- External links (YouTube/Bandcamp/Instagram) remain supported as embeds alongside hosted media — but are never *required*.
+
+## 9. AI subsystem (the gateway — K9)
 
 **Task registry (MVP):**
 
@@ -189,31 +212,32 @@ soundPlan(venuePA, performerNeeds) → { verdict: covered | tech_needed | tech_a
 - Per-task model routing (cheap model for triage/classification; frontier for ingestion/drafting) and a monthly budget cap with alerting (worker refuses new non-critical AI jobs past cap; booking-critical paths have no AI dependency by design).
 - **The invariant, enforced in one place:** nothing AI-generated reaches another user or a state machine without either schema-validated determinism (sound brief polish) or explicit human approval (everything else).
 
-## 9. Communications
+## 10. Communications
 
 - **Outbound:** notification fan-out consumes `events`; per-user channel prefs; critical path (offer, confirmation, day-before reminder, payment released) goes SMS + email + push(PWA); everything else digest-able. Templates versioned with the same discipline as prompts.
 - **Inbound SMS (Twilio):** one webhook → `sms_sessions` router: replies to active thread context if one exists; otherwise `slot_parse` for venue numbers; otherwise support. STOP/HELP handled at the router before any logic (compliance).
-- **In-app messaging:** thread-scoped (application/booking/support); contact info auto-revealed at `confirmed` (PRD F5.1) by template, not by trusting users to share.
+- **In-app messaging:** thread-scoped (inquiry/application/booking/support); contact info auto-revealed at `confirmed` (PRD F5.1) by template, not by trusting users to share.
+- **Direct inquiries ("message any band"):** a venue can open an inquiry thread with any performer — typically alongside an invite-to-slot, but free-form questions are allowed. Performers reply, decline, or mute/block. Anti-abuse: per-venue daily inquiry cap; the contact-info reveal rules apply unchanged. Inquiry threads convert in place to application/booking threads when a slot is attached. Performer→venue cold messaging stays **off** (performers reach venues by applying to slots) — pitch spam is the failure mode venue bookers hate most about email/Instagram today, and we won't recreate it.
 - **iCal:** signed per-user feed URLs generated from bookings; revocable.
 
-## 10. Security, privacy, compliance
+## 11. Security, privacy, compliance
 
 - AuthZ: role-scoped access checked in the domain layer (not just routes); venues see applicant profiles, never contact info pre-confirmation; performers never see venue payment instruments.
 - PII map maintained in repo (`docs/pii.md`): what we hold, where, retention. Deletion endpoint anonymizes user rows and strips PII from events payloads (events keep structural data — bookings/money history is legally retained).
-- Media uploads: content-type sniffing, size caps, EXIF-strip on images, virus scan lambda; all media behind CDN with signed URLs for non-public assets (COIs).
+- Media: secured by the §8 pipeline (content-type sniffing, EXIF-strip, virus scan, fraud screening before public visibility); CloudFront signed URLs for non-public assets (COIs, stage plots).
 - Secrets in platform secret manager; no secrets in repo; quarterly key rotation checklist.
 - Backups: managed Postgres PITR + nightly logical dump to object storage, restore-tested monthly (calendar reminder is part of this spec).
 - Rate limits on auth, application, and messaging endpoints (abuse + scraping).
 - Logging: no message bodies or PII in application logs; `events` is the audited store, access-controlled.
 
-## 11. Observability & analytics
+## 12. Observability & analytics
 
 - Sentry (web + worker), structured JSON logs, uptime checks on web + webhook endpoints + queue depth.
 - **Metrics from `events`, not from instrumentation:** liquidity dashboard (PRD F9.2 — fill rate, time-to-fill, application depth) is SQL over `events`/domain tables, materialized views refreshed hourly. The PRD §9 metrics each get a view at MVP — if a metric can't be computed, that's a missing event, fixed at the source.
 - ROI-loop groundwork (F8.5-P0): nightly job snapshots booking-night facts per venue (day-of-week, format, budget, weather later) into `venue_night_facts` — the baseline table the Phase 2 POS comparison will join against.
 - AI ops: per-task cost/volume/approval-rate dashboard; approval rate per task is the input to autonomy-graduation decisions.
 
-## 12. Testing strategy
+## 13. Testing strategy
 
 | Layer | Approach |
 |---|---|
@@ -224,18 +248,18 @@ soundPlan(venuePA, performerNeeds) → { verdict: covered | tech_needed | tech_a
 | Time | All clock-driven logic takes an injected clock; lifecycle tests run a full booking through simulated weeks in milliseconds |
 | E2E | Playwright on the 5 critical journeys: post slot (web + SMS), apply→offer→accept→pay, tech attach, cancel w/ fees, review |
 
-## 13. Build plan
+## 14. Build plan
 
 | Milestone | Scope | Exit criteria |
 |---|---|---|
-| **M0 — Walking skeleton** (wk 1–3) | Auth, profiles (manual entry), slot post/feed/apply, offer→accept with NO payments (terms recorded, pay-direct), events table, deploy pipeline | A real venue books a real performer end-to-end in staging; events show the full story |
+| **M0 — Walking skeleton** (wk 1–3) | Auth, profiles with bios + photo upload + inquiry messaging, slot post/feed/apply, offer→accept with NO payments (terms recorded, pay-direct), events table, CDK + deploy pipeline to AWS | A real venue messages and books a real performer end-to-end in staging; events show the full story |
 | **M1 — Money** (wk 4–7) | Full state machine, Stripe Connect Express, charge/hold/release, ledger + reconciliation, cancellation fees, click-wrap contracts, critical-path notifications (SMS/email) | Property suite green; test-mode lifecycle incl. disputes and both cancel branches; reconciliation catches seeded faults |
-| **M2 — AI & the third side** (wk 8–11) | AI gateway + `profile_ingest`, `slot_parse` (SMS posting), `gear_extract`, sound-plan engine, tech sub-slots on the same rails, review system | <5-min link-in onboarding measured with 10 real performers; SMS slot post → confirmed booking demonstrated; tech books through a sub-slot |
+| **M2 — AI & the third side** (wk 8–11) | AI gateway + `profile_ingest`, `slot_parse` (SMS posting), `gear_extract`, sound-plan engine, tech sub-slots on the same rails, review system, audio/video hosting pipeline (MediaConvert HLS + AAC) | <5-min link-in onboarding measured with 10 real performers; SMS slot post → confirmed booking demonstrated; tech books through a sub-slot; uploaded video plays back via HLS |
 | **M3 — Launch hardening** (wk 12–14) | `media_fraud_screen`, `support_triage`, dispute flow + ops dashboard, liquidity dashboard, iCal, rate limits, backup-restore drill, load test at 100× | Ops can run a dispute start-to-finish; on-call runbook exists; Phase 0 anchor venues onboarded to staging |
 
 Deliberately deferred (with their seams): replacement engine (consumes `cancelled_by_performer` events), split payouts (ledger rows already per-member), promotion generation (consumes `confirmed` events), POS integration (joins `venue_night_facts`), native apps (PWA until push becomes the binding constraint), ML ranking (pgvector columns waiting).
 
-## 14. Open engineering questions
+## 15. Open engineering questions
 
 1. **ACH vs card default for venue charges** — ACH fees suit our margins (K3 processing spread) but the multi-day settlement stretches `confirming`; likely card-default at MVP, ACH for subscriptions later.
 2. **Twilio A2P 10DLC registration lead time** — must start in M0 (weeks of carrier vetting; SMS is P0).

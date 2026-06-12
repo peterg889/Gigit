@@ -85,7 +85,7 @@ Priorities: **P0** = MVP launch blocker; **P1** = fast-follow (first 1–2 quart
 | # | Requirement | Priority |
 |---|---|---|
 | F1.1 | Three account types — **Performer** (subtype: band / solo musician / comedian / other), **Venue**, **Sound tech**. One human can hold multiple roles (a comedian who produces; a musician who does sound) under one login. | P0 |
-| F1.2 | **Performer profile** = lightweight EPK: name, genre/format tags, home metro + travel radius, bio, photos, 1–3 media links (YouTube/audio embeds), set lengths offered, standard rate range, typical stage/tech needs (input count, vocal-PA-only vs full backline, stage plot upload optional). | P0 |
+| F1.2 | **Performer profile** = lightweight EPK: name, genre/format tags, home metro + travel radius, written bio, **natively hosted media — photos, audio tracks, and video clips uploaded to the platform** (external YouTube/Bandcamp/Instagram links also supported, never required), set lengths offered, standard rate range, typical stage/tech needs (input count, vocal-PA-only vs full backline, stage plot upload optional). | P0 |
 | F1.3 | **Venue profile**: type (bar/restaurant/coffee shop/brewery/other), capacity, room photos, stage/performance area dimensions, **house PA & gear inventory** (structured checklist: PA yes/no, mixer channels, mics, monitors, who runs sound), typical audience, parking/load-in notes, hospitality offered (meal/drinks tab), noise constraints/curfew. | P0 |
 | F1.4 | **Sound tech profile**: experience summary, gear offered (none / partial / full PA rig with specs: speakers, mixer, mic package, monitors), rates (labor-only vs with-rig), travel radius, credits/references. | P0 |
 | F1.5 | Identity verification (email + phone) at signup; Stripe identity verification before first payout. | P0 |
@@ -132,7 +132,7 @@ Priorities: **P0** = MVP launch blocker; **P1** = fast-follow (first 1–2 quart
 
 | # | Requirement | Priority |
 |---|---|---|
-| F5.1 | In-platform messaging scoped to applications and bookings; full contact details revealed at confirmation (phone numbers needed day-of). | P0 |
+| F5.1 | In-platform messaging scoped to applications, bookings, and **direct venue→performer inquiries** (a venue can message any performer, typically with an invite attached; rate-capped, performer can mute/block; performer→venue cold messaging stays off to protect bookers from pitch spam); full contact details revealed at confirmation (phone numbers needed day-of). | P0 |
 | F5.2 | Push + email + SMS for the critical path: new matching slot, application received, offer, confirmation, day-before reminder, payment released. Venue managers live in their POS, not our app — SMS matters. | P0 |
 | F5.3 | Response-time tracking surfaced on profiles ("usually responds in X hours") — unresponsive bookers are a top performer complaint. | P1 |
 
@@ -182,6 +182,7 @@ Priorities: **P0** = MVP launch blocker; **P1** = fast-follow (first 1–2 quart
 
 - **Mobile-first responsive web app** at launch (performers live on phones; venue managers on tablets/laptops). Native apps P2; push via PWA + SMS until then.
 - Payments: PCI scope minimized via Stripe Elements/Connect; no card data touches our servers.
+- Infrastructure: AWS-native deployment (ECS Fargate, RDS Postgres, S3 + CloudFront + MediaConvert for hosted profile media) — see [`docs/engineering-spec.md`](docs/engineering-spec.md).
 - Trust & safety: real-name policy for venue accounts; rate-limited messaging; no off-platform payment solicitation in messages (detection-flagging, not auto-ban — see Risks).
 - Availability target 99.9%; gig-day flows (runsheet, contacts, payment confirmation) must degrade gracefully offline (cached runsheet).
 - Privacy: contact info gated until confirmation; performer addresses never shown; CCPA-grade data handling.
