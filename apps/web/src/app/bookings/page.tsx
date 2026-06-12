@@ -51,7 +51,9 @@ export default async function BookingsPage() {
         return (
           <div className="card" key={booking.id}>
             <div>
-              <strong>{performerName}</strong> at <strong>{venueName}</strong>{" "}
+              <Link href={`/bookings/${booking.id}`}>
+                <strong>{performerName}</strong> at <strong>{venueName}</strong>
+              </Link>{" "}
               <span className="badge">{booking.state}</span>
             </div>
             <div className="muted">

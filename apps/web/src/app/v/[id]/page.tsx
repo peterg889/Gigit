@@ -2,7 +2,7 @@ import { db, schema } from "@gigit/db";
 import { and, asc, eq, gte } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { localPublicPath } from "@/lib/storage";
+import { publicMediaUrl } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +29,9 @@ export default async function VenuePage({
       ),
     )
     .orderBy(asc(schema.mediaAssets.position));
+  const photoUrls = await Promise.all(
+    photos.map(async (m) => ({ id: m.id, url: await publicMediaUrl(m.storageKey!) })),
+  );
 
   const openSlots = await d
     .select()
@@ -63,13 +66,13 @@ export default async function VenuePage({
         </p>
       </div>
 
-      {photos.length > 0 && (
+      {photoUrls.length > 0 && (
         <div className="card">
-          {photos.map((m) => (
+          {photoUrls.map((m) => (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               key={m.id}
-              src={localPublicPath(m.storageKey!)}
+              src={m.url}
               alt={v.name}
               style={{ maxWidth: 160, marginRight: 8, borderRadius: 6 }}
             />

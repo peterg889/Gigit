@@ -50,6 +50,10 @@ export function ApiForm({
         body[f.name] = new Date(raw).toISOString();
       else body[f.name] = raw;
     }
+    if (transform === "ratingsOverall" && typeof body.overall === "number") {
+      body.ratings = { overall: body.overall };
+      delete body.overall;
+    }
     if (transform === "genreTagsCsv" && typeof body.genreTags === "string") {
       body.genreTags = (body.genreTags as string)
         .split(",")

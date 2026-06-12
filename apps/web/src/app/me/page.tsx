@@ -3,6 +3,7 @@ import { performerOwnedBy, techOwnedBy, venueOwnedBy } from "@/lib/auth";
 import { sessionUserId } from "@/lib/session";
 import { ApiForm } from "@/components/ApiForm";
 import { ProfileIngestWidget } from "@/components/AiAssist";
+import { MediaManager } from "@/components/MediaManager";
 
 export const dynamic = "force-dynamic";
 
@@ -31,11 +32,15 @@ export default async function MePage() {
       <div className="card">
         <h2>Performer</h2>
         {performer ? (
+          <>
           <p>
-            <strong>{performer.name}</strong> <span className="badge">{performer.kind}</span>
+            <strong>{performer.name}</strong> <span className="badge">{performer.kind}</span>{" "}
+            <Link href={`/p/${performer.id}`}>view public page</Link>
             <br />
             <span className="muted">{performer.bio}</span>
           </p>
+          <MediaManager subjectType="performer" />
+          </>
         ) : (
           <>
           <ProfileIngestWidget />
@@ -58,11 +63,15 @@ export default async function MePage() {
       <div className="card">
         <h2>Venue</h2>
         {venue ? (
+          <>
           <p>
-            <strong>{venue.name}</strong> <span className="badge">{venue.kind}</span>
+            <strong>{venue.name}</strong> <span className="badge">{venue.kind}</span>{" "}
+            <Link href={`/v/${venue.id}`}>view public page</Link>
             <br />
             <span className="muted">{venue.bio}</span>
           </p>
+          <MediaManager subjectType="venue" />
+          </>
         ) : (
           <ApiForm
             endpoint="/api/venues"

@@ -1,7 +1,7 @@
 import { db, schema } from "@gigit/db";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { notFound } from "next/navigation";
-import { localPublicPath } from "@/lib/storage";
+import { publicMediaUrl } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -56,9 +56,15 @@ export default async function PerformerPage({
       ? visible.reduce((s, r) => s + (r.ratings.overall ?? 0), 0) / visible.length
       : null;
 
-  const images = media.filter((m) => m.kind === "image");
-  const audio = media.filter((m) => m.kind === "audio");
-  const embeds = media.filter((m) => m.kind === "video_embed");
+  const mediaWithUrls = await Promise.all(
+    media.map(async (m) => ({
+      ...m,
+      url: m.storageKey ? await publicMediaUrl(m.storageKey) : null,
+    })),
+  );
+  const images = mediaWithUrls.filter((m) => m.kind === "image");
+  const audio = mediaWithUrls.filter((m) => m.kind === "audio");
+  const embeds = mediaWithUrls.filter((m) => m.kind === "video_embed");
 
   return (
     <div>
@@ -90,7 +96,7 @@ export default async function PerformerPage({
             // eslint-disable-next-line @next/next/no-img-element
             <img
               key={m.id}
-              src={localPublicPath(m.storageKey!)}
+              src={m.url!}
               alt={p.name}
               style={{ maxWidth: 160, marginRight: 8, borderRadius: 6 }}
             />
@@ -102,7 +108,7 @@ export default async function PerformerPage({
         <div className="card">
           <h2>Listen</h2>
           {audio.map((m) => (
-            <audio key={m.id} controls src={localPublicPath(m.storageKey!)} />
+            <audio key={m.id} controls src={m.url!} />
           ))}
         </div>
       )}

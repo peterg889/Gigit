@@ -63,7 +63,7 @@ export async function POST(req: Request) {
       return fail("quota", `max ${quota} ${kind} files per profile`, 422);
 
     const id = newId("media");
-    const target = uploadTargetFor(id, contentType);
+    const target = await uploadTargetFor(id, contentType);
     await d.insert(schema.mediaAssets).values({
       id,
       ownerUserId: userId,

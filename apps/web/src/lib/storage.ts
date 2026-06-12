@@ -1,8 +1,10 @@
 /**
  * Media storage driver (m0-technical-spec §3): `local` writes under .data/uploads
- * (dev), `s3` issues presigned URLs (prod, wired in M1 infra work).
+ * (dev); `s3` issues presigned PUT URLs and serves via CloudFront (prod).
  */
 import { env } from "@gigit/db";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -26,17 +28,38 @@ export interface UploadTarget {
   uploadUrl: string;
   method: "PUT";
   storageKey: string;
+  /** headers the client must send (s3 driver: content-type) */
+  headers?: Record<string, string>;
 }
 
-export function uploadTargetFor(mediaId: string, contentType: string): UploadTarget {
+let s3: S3Client | undefined;
+function s3Client(): S3Client {
+  s3 ??= new S3Client({ region: env().AWS_REGION });
+  return s3;
+}
+
+export async function uploadTargetFor(
+  mediaId: string,
+  contentType: string,
+): Promise<UploadTarget> {
+  const ext = extFor(contentType);
   if (env().STORAGE_DRIVER === "s3") {
-    // M1: @aws-sdk presigned PUT against env().S3_BUCKET. Fails loudly until wired.
-    throw new Error("s3 storage driver not wired yet (M1 infra milestone)");
+    const storageKey = `media/${mediaId}.${ext}`;
+    const uploadUrl = await getSignedUrl(
+      s3Client(),
+      new PutObjectCommand({
+        Bucket: env().S3_BUCKET!,
+        Key: storageKey,
+        ContentType: contentType,
+      }),
+      { expiresIn: 600 },
+    );
+    return { uploadUrl, method: "PUT", storageKey, headers: { "content-type": contentType } };
   }
   return {
     uploadUrl: `/api/media/${mediaId}/upload`,
     method: "PUT",
-    storageKey: `local/${mediaId}.${extFor(contentType)}`,
+    storageKey: `local/${mediaId}.${ext}`,
   };
 }
 
@@ -47,8 +70,22 @@ export async function localWrite(storageKey: string, bytes: Buffer): Promise<voi
   await writeFile(file, bytes);
 }
 
+/** Public URL for a ready asset. Local: dev file route. S3: CDN or signed GET. */
 export function localPublicPath(storageKey: string): string {
   return `/api/media/file/${path.basename(storageKey)}`;
+}
+
+export async function publicMediaUrl(storageKey: string): Promise<string> {
+  if (env().STORAGE_DRIVER === "s3") {
+    const cdn = process.env.MEDIA_CDN_URL;
+    if (cdn) return `${cdn.replace(/\/$/, "")}/${storageKey}`;
+    return getSignedUrl(
+      s3Client(),
+      new GetObjectCommand({ Bucket: env().S3_BUCKET!, Key: storageKey }),
+      { expiresIn: 3600 },
+    );
+  }
+  return localPublicPath(storageKey);
 }
 
 function extFor(contentType: string): string {

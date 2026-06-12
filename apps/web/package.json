@@ -11,6 +11,8 @@
     "start": "next start"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1067.0",
+    "@aws-sdk/s3-request-presigner": "^3.1067.0",
     "@gigit/db": "workspace:*",
     "@gigit/domain": "workspace:*",
     "drizzle-orm": "^0.44.7",
