@@ -16,7 +16,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Gigit
           </Link>
           <Link href="/slots/new">Post a slot</Link>
+          <Link href="/techs">Sound techs</Link>
           <Link href="/bookings">Bookings</Link>
+          <Link href="/inbox">Inbox</Link>
           <Link href="/me">Profile</Link>
           <Link href="/login">Sign in</Link>
         </header>

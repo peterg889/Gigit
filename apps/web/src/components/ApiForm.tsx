@@ -22,12 +22,14 @@ export function ApiForm({
   submitLabel,
   redirectTo,
   transform,
+  extra,
 }: {
   endpoint: string;
   fields: Field[];
   submitLabel: string;
   redirectTo?: string;
   transform?: string; // name of a built-in transform; serializable for server components
+  extra?: Record<string, unknown>; // constant fields merged into the payload
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +40,7 @@ export function ApiForm({
     setBusy(true);
     setError(null);
     const form = new FormData(e.currentTarget);
-    const body: Record<string, unknown> = {};
+    const body: Record<string, unknown> = { ...extra };
     for (const f of fields) {
       const raw = String(form.get(f.name) ?? "").trim();
       if (raw === "") continue;

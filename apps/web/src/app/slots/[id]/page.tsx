@@ -1,5 +1,7 @@
+import { soundPlan } from "@gigit/domain";
 import { db, schema } from "@gigit/db";
 import { eq } from "drizzle-orm";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { performerOwnedBy, venueOwnedBy } from "@/lib/auth";
 import { sessionUserId } from "@/lib/session";
@@ -66,10 +68,25 @@ export default async function SlotPage({ params }: { params: Promise<{ id: strin
       {isOwner && (
         <div className="card">
           <h2>Applicants ({applicants.length})</h2>
-          {applicants.map(({ application, performer: p }) => (
+          {applicants.map(({ application, performer: p }) => {
+            const plan = soundPlan(venue.paInventory, p.techNeeds);
+            return (
             <div className="card" key={application.id}>
-              <strong>{p.name}</strong> <span className="badge">{p.kind}</span>{" "}
-              <span className="badge">{application.status}</span>
+              <strong>
+                <Link href={`/p/${p.id}`}>{p.name}</Link>
+              </strong>{" "}
+              <span className="badge">{p.kind}</span>{" "}
+              <span className="badge">{application.status}</span>{" "}
+              <span className="badge">
+                {plan.verdict === "covered"
+                  ? "sound: covered"
+                  : plan.verdict === "tech_needed"
+                    ? "sound: tech needed"
+                    : "sound: tech + rig needed"}
+              </span>
+              {plan.gaps.length > 0 && (
+                <p className="muted">Sound gaps: {plan.gaps.join("; ")}</p>
+              )}
               <p className="muted">{p.bio}</p>
               {application.note && <p>“{application.note}”</p>}
               {application.status === "submitted" && (
@@ -86,8 +103,14 @@ export default async function SlotPage({ params }: { params: Promise<{ id: strin
                   ]}
                 />
               )}
+              {plan.verdict !== "covered" && (
+                <p className="muted">
+                  <Link href="/techs">Browse sound techs →</Link>
+                </p>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

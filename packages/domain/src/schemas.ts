@@ -96,10 +96,24 @@ export const messageCreateSchema = z.object({
   body: z.string().min(1).max(4000),
 });
 
-export const inquiryCreateSchema = z.object({
-  performerId: z.string().min(1),
-  slotId: z.string().min(1).optional(),
-  body: z.string().min(1).max(4000),
+export const inquiryCreateSchema = z
+  .object({
+    performerId: z.string().min(1).optional(),
+    techId: z.string().min(1).optional(),
+    slotId: z.string().min(1).optional(),
+    body: z.string().min(1).max(4000),
+  })
+  .refine((v) => !!v.performerId !== !!v.techId, {
+    message: "provide exactly one of performerId or techId",
+  });
+
+export const reviewCreateSchema = z.object({
+  ratings: z
+    .record(z.string(), z.number().int().min(1).max(5))
+    .refine((r) => typeof r.overall === "number", {
+      message: "ratings.overall is required",
+    }),
+  body: z.string().max(2000).default(""),
 });
 
 export const embedCreateSchema = z.object({

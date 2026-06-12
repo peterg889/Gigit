@@ -8,8 +8,18 @@ import path from "node:path";
 
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+// Audio is stored as-is — no transcode service (engineering-spec K8).
+export const AUDIO_MAX_BYTES = 25 * 1024 * 1024;
+export const AUDIO_TYPES = ["audio/mpeg", "audio/mp4", "audio/x-m4a"];
 export const PER_PROFILE_IMAGE_QUOTA = 20;
+export const PER_PROFILE_AUDIO_QUOTA = 10;
 export const PER_PROFILE_EMBED_QUOTA = 5;
+
+export function mediaKindFor(contentType: string): "image" | "audio" | null {
+  if (IMAGE_TYPES.includes(contentType)) return "image";
+  if (AUDIO_TYPES.includes(contentType)) return "audio";
+  return null;
+}
 
 export interface UploadTarget {
   /** where the client should send the bytes */
@@ -42,7 +52,14 @@ export function localPublicPath(storageKey: string): string {
 }
 
 function extFor(contentType: string): string {
-  return { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" }[
-    contentType
-  ] ?? "bin";
+  return (
+    {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "audio/mpeg": "mp3",
+      "audio/mp4": "m4a",
+      "audio/x-m4a": "m4a",
+    }[contentType] ?? "bin"
+  );
 }

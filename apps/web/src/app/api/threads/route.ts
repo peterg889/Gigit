@@ -1,7 +1,7 @@
 import { inquiryCreateSchema, newId } from "@gigit/domain";
 import { appendEvent, db, schema } from "@gigit/db";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
-import { AuthError, requireUser, venueOwnedBy } from "@/lib/auth";
+import { AuthError, performerOwnedBy, requireUser, venueOwnedBy } from "@/lib/auth";
 import { fail, ok, parseBody } from "@/lib/respond";
 
 const DAILY_INQUIRY_CAP = 10; // engineering-spec §10: anti-spam cap per venue
@@ -11,18 +11,44 @@ export async function POST(req: Request) {
   try {
     const userId = await requireUser();
     const venue = await venueOwnedBy(userId);
-    if (!venue)
-      return fail("forbidden", "only venues can open inquiries (performers apply to slots)", 403);
+    const performer = await performerOwnedBy(userId);
 
     const parsed = await parseBody(req, inquiryCreateSchema);
     if ("response" in parsed) return parsed.response;
 
+    // Who may open what: venues message performers/techs; performers message
+    // techs (to hire sound). Performer→venue cold messaging stays off (F5.1).
+    const allowed =
+      (venue && (parsed.data.performerId || parsed.data.techId)) ||
+      (performer && parsed.data.techId);
+    if (!allowed)
+      return fail(
+        "forbidden",
+        "venues can message performers and techs; performers can message techs",
+        403,
+      );
+
+    // Recipient is a performer or a sound tech (PRD F5.1 / F6 invites).
     const d = db();
-    const [performer] = await d
-      .select()
-      .from(schema.performers)
-      .where(eq(schema.performers.id, parsed.data.performerId));
-    if (!performer) return fail("not_found", "performer not found", 404);
+    let recipientUserId: string | undefined;
+    let recipientRef: Record<string, string> = {};
+    if (parsed.data.performerId) {
+      const [p] = await d
+        .select()
+        .from(schema.performers)
+        .where(eq(schema.performers.id, parsed.data.performerId));
+      if (!p) return fail("not_found", "performer not found", 404);
+      recipientUserId = p.ownerUserId;
+      recipientRef = { performerId: p.id };
+    } else {
+      const [t] = await d
+        .select()
+        .from(schema.techs)
+        .where(eq(schema.techs.id, parsed.data.techId!));
+      if (!t) return fail("not_found", "tech not found", 404);
+      recipientUserId = t.ownerUserId;
+      recipientRef = { techId: t.id };
+    }
 
     const since = new Date(Date.now() - 24 * 3_600_000);
     const [{ count }] = (await d
@@ -52,7 +78,7 @@ export async function POST(req: Request) {
       });
       await tx.insert(schema.threadParticipants).values([
         { threadId, userId },
-        { threadId, userId: performer.ownerUserId },
+        { threadId, userId: recipientUserId },
       ]);
       await tx.insert(schema.messages).values({
         id: messageId,
@@ -66,7 +92,7 @@ export async function POST(req: Request) {
         subjectType: "thread",
         subjectId: threadId,
         payload: {
-          performerId: performer.id,
+          ...recipientRef,
           effects: [{ kind: "notify", template: "new_inquiry", to: "performer" }],
         },
       });

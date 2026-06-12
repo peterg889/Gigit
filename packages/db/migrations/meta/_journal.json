@@ -15,6 +15,13 @@
       "when": 1781233673275,
       "tag": "0001_groovy_quicksilver",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781257962810,
+      "tag": "0002_awesome_caretaker",
+      "breakpoints": true
     }
   ]
 }

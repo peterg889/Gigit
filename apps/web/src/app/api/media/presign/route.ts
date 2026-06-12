@@ -5,9 +5,13 @@ import { z } from "zod";
 import { AuthError, performerOwnedBy, requireUser, techOwnedBy, venueOwnedBy } from "@/lib/auth";
 import { fail, ok, parseBody } from "@/lib/respond";
 import {
+  AUDIO_MAX_BYTES,
+  AUDIO_TYPES,
   IMAGE_MAX_BYTES,
   IMAGE_TYPES,
+  PER_PROFILE_AUDIO_QUOTA,
   PER_PROFILE_IMAGE_QUOTA,
+  mediaKindFor,
   uploadTargetFor,
 } from "@/lib/storage";
 
@@ -25,10 +29,15 @@ export async function POST(req: Request) {
     if ("response" in parsed) return parsed.response;
     const { subjectType, contentType, bytes } = parsed.data;
 
-    if (!IMAGE_TYPES.includes(contentType))
-      return fail("unsupported_type", `allowed: ${IMAGE_TYPES.join(", ")}`, 422);
-    if (bytes > IMAGE_MAX_BYTES)
-      return fail("too_large", `max ${IMAGE_MAX_BYTES} bytes`, 422);
+    const kind = mediaKindFor(contentType);
+    if (!kind)
+      return fail(
+        "unsupported_type",
+        `allowed: ${[...IMAGE_TYPES, ...AUDIO_TYPES].join(", ")}`,
+        422,
+      );
+    const maxBytes = kind === "image" ? IMAGE_MAX_BYTES : AUDIO_MAX_BYTES;
+    if (bytes > maxBytes) return fail("too_large", `max ${maxBytes} bytes`, 422);
 
     const owner =
       subjectType === "performer"
@@ -46,11 +55,12 @@ export async function POST(req: Request) {
         and(
           eq(schema.mediaAssets.subjectType, subjectType),
           eq(schema.mediaAssets.subjectId, owner.id),
-          eq(schema.mediaAssets.kind, "image"),
+          eq(schema.mediaAssets.kind, kind),
         ),
       );
-    if (existing.length >= PER_PROFILE_IMAGE_QUOTA)
-      return fail("quota", `max ${PER_PROFILE_IMAGE_QUOTA} photos per profile`, 422);
+    const quota = kind === "image" ? PER_PROFILE_IMAGE_QUOTA : PER_PROFILE_AUDIO_QUOTA;
+    if (existing.length >= quota)
+      return fail("quota", `max ${quota} ${kind} files per profile`, 422);
 
     const id = newId("media");
     const target = uploadTargetFor(id, contentType);
@@ -59,7 +69,7 @@ export async function POST(req: Request) {
       ownerUserId: userId,
       subjectType,
       subjectId: owner.id,
-      kind: "image",
+      kind,
       storageKey: target.storageKey,
       bytes,
       status: "uploaded",

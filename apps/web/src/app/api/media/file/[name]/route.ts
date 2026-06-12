@@ -13,8 +13,13 @@ export async function GET(_req: Request, { params }: Params) {
     const buf = await readFile(file);
     const ext = path.extname(safe).slice(1);
     const type =
-      { jpg: "image/jpeg", png: "image/png", webp: "image/webp" }[ext] ??
-      "application/octet-stream";
+      {
+        jpg: "image/jpeg",
+        png: "image/png",
+        webp: "image/webp",
+        mp3: "audio/mpeg",
+        m4a: "audio/mp4",
+      }[ext] ?? "application/octet-stream";
     return new Response(new Uint8Array(buf), {
       headers: { "content-type": type, "cache-control": "public, max-age=3600" },
     });

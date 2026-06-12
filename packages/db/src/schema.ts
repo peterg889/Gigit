@@ -250,6 +250,22 @@ export const messages = pgTable(
   (t) => [index("messages_thread_idx").on(t.threadId, t.createdAt)],
 );
 
+// ── reviews (PRD F7.1: double-blind; from completed platform bookings only) ──
+export const reviews = pgTable(
+  "reviews",
+  {
+    id: text("id").primaryKey(),
+    bookingId: text("booking_id")
+      .notNull()
+      .references(() => bookings.id),
+    authorRole: text("author_role").notNull(), // venue | performer
+    ratings: jsonb("ratings").$type<Record<string, number>>().notNull(),
+    body: text("body").notNull().default(""),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("reviews_booking_author_uq").on(t.bookingId, t.authorRole)],
+);
+
 // ── money: intent ledger (engineering-spec K3 — append-only) ────────────────
 export const ledgerEntries = pgTable(
   "ledger_entries",
