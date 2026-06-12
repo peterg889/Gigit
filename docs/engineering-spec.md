@@ -26,46 +26,48 @@
 | K5 | **Append-only `events` table (outbox + audit + analytics) from day one.** Every domain event (state transitions, messages, AI decisions, money intents) is a row; consumers (webhooks out, notification fan-out, the future warehouse) read from it. | PRD requires audit (disputes, F7.4), the ROI loop needs historical baselines from MVP (F8.5), and analytics shouldn't require instrumentation archaeology later. | High to retrofit, trivial to start |
 | K6 | **Phone-first passwordless auth** (SMS OTP, email magic-link fallback). Sessions via secure cookies; no passwords ever stored. | SMS is a first-class product surface (F2.8); venue managers are phone people; passwords are support debt. | Low |
 | K7 | **Contracts = versioned click-wrap, not e-signature SaaS.** Agreement text rendered from booking terms + template version; both parties accept in-flow; acceptance event (user, IP, timestamp, template hash) recorded. No DocuSign. | Click-wrap with audit trail is legally sufficient for these agreement values; e-sign SaaS adds cost and flow friction. | Low (can add e-sign for high-value bookings later) |
-| K8 | **Native media hosting: S3 + CloudFront + MediaConvert pipeline (§8).** Performers upload photos, audio tracks, and video clips directly; external YouTube/Bandcamp links remain supported but optional. Strict per-profile quotas keep storage/egress bounded. | Profiles are the storefront; a self-contained EPK removes dependence on third-party embeds (broken links, ads, tracking) and feeds F-AI.8 (highlight reels, audio embeddings) from assets we control. | Medium |
+| K8 | **Media kept simple: photos and audio tracks uploaded natively (stored as-is, no transcode service); video via YouTube/Vimeo embed only (§8).** S3 + CloudFront; image renditions via sharp in the worker; MP3/M4A served directly. | Photos have no embed alternative; audio-as-is costs pennies and needs no pipeline; video was the only media demanding a transcode service (MediaConvert) — embeds delete that entire subsystem. `profile_ingest` (F1.8) finds artists' existing YouTube links automatically, so the embed requirement costs performers nothing. | Low |
 | K9 | **All LLM use flows through one internal `ai` module** ("AI gateway"): task registry, repo-versioned prompts, zod-validated structured outputs, per-task model routing, full I/O logging to `events`, cost metering, golden-set eval harness in CI. No ad-hoc model calls anywhere else in the codebase. | Centralizes safety (injection surface, output validation), cost control, and the PRD's draft-never-publish invariant; makes model swaps a config change. | High to retrofit |
 | K10 | **Single region, single metro-aware schema.** Every domain row carries `metro_id`; no per-metro databases, no sharding. | Metro #2 must be an INSERT, not a deployment. | Low |
-| K11 | **AWS-native infrastructure, IaC in CDK (TypeScript).** ECS Fargate (web + worker) behind ALB + CloudFront, RDS Postgres (Multi-AZ in prod), S3 + MediaConvert, SES, Secrets Manager, CloudWatch; staging and production in separate AWS accounts; GitHub Actions deploys via OIDC (no long-lived keys). | One cloud, one IaC language (same as the app); the media pipeline gets first-party primitives (S3 events → MediaConvert); AWS is the platform least likely to need migrating off. App Runner is the documented fallback if Fargate ops overhead annoys early. | Medium — contained by IaC |
+| K11 | **AWS-native but minimal, IaC in CDK (TypeScript): App Runner (web) + one small EC2 worker — no Fargate, no ALB, no cluster.** Web on App Runner (managed TLS/autoscaling, auto-deploy from ECR). Worker is a Node container on a single t4g EC2 instance (docker + systemd, redeployed via SSM) — App Runner CPU-throttles outside requests, so background jobs need an always-on box. Webhooks (Stripe/Twilio) terminate at the web service, which verifies signatures and enqueues transactionally; the worker has no inbound surface. RDS Postgres (single-AZ at launch), S3 + CloudFront, SES, Secrets Manager, CloudWatch; staging/prod in separate accounts; GitHub Actions via OIDC. | Two moving parts a 1–3 person team can hold in their heads. Scaling path (second worker, or Fargate if ever needed) is a CDK change, not a redesign. | Low |
 
 ## 3. System overview
 
 ```
-                     CloudFront (CDN: app assets + public profile media)
+                       CloudFront (CDN: public profile media from S3)
                                             │
-                ┌───────────────────────────▼──── ALB (AWS) ────────────────────────────┐
-                │  Web service — Next.js (mobile-first web + PWA) on ECS Fargate        │
+                ┌───────────────────────────┴───────────────────────────────────────────┐
+                │  Web service — Next.js (mobile-first web + PWA) on AWS App Runner     │
    Performers   │   • feeds, profiles, slot mgmt, booking flows, review queues          │
    Venues   ───▶│   • API routes (reads, simple writes); presigned S3 upload grants     │
-   Techs        └───────────────┬───────────────────────────────────────────────────────┘
+   Techs        │   • webhook endpoints: Stripe, Twilio (verify signature →             │
+                │     insert event + enqueue transactionally → 200)                     │
+                └───────────────┬───────────────────────────────────────────────────────┘
                                 │ writes that matter → enqueue/transition via domain pkg
                 ┌───────────────▼───────────────────────────────────────────────────────┐
-                │  Worker service — Node on ECS Fargate                                 │
+                │  Worker — Node container on one small EC2 (t4g, docker + systemd)     │
                 │   • pg-boss consumers: notifications, AI tasks, payment ops,          │
-                │     media pipeline, scheduled jobs (release T+24h, expiry, reminders) │
-                │   • webhook receivers: Stripe, Twilio (signature-verified, idempotent)│
+                │     image/audio processing, scheduled jobs (release T+24h, reminders) │
                 │   • outbox dispatcher: events → notifications / external webhooks     │
+                │   • no inbound surface (webhooks land at the web service)             │
                 └───────────────┬───────────────────────────────────────────────────────┘
                                 │
         ┌───────────────────────▼────────────────────────┐   ┌───────────────────────────┐
-        │  RDS Postgres (Multi-AZ in prod)               │   │  AWS managed               │
+        │  RDS Postgres                                  │   │  AWS managed               │
         │   schema: identity | profiles | marketplace |  │   │   S3 (media, docs, backups)│
-        │           booking | money | comms | ai | events│   │   MediaConvert (transcode) │
-        │   extensions: PostGIS, pgvector, pg_trgm       │   │   SES (email)              │
-        │   pg-boss job tables                           │   │   Secrets Mgr, CloudWatch  │
-        └────────────────────────────────────────────────┘   ├───────────────────────────┤
-                                                             │  External                  │
+        │           booking | money | comms | ai | events│   │   SES (email)              │
+        │   extensions: PostGIS, pgvector, pg_trgm       │   │   Secrets Mgr, CloudWatch  │
+        │   pg-boss job tables                           │   ├───────────────────────────┤
+        └────────────────────────────────────────────────┘   │  External                  │
                                                              │   Stripe Connect           │
                                                              │   Twilio (SMS)             │
                                                              │   Anthropic API (AI)       │
+                                                             │   YouTube/Vimeo (embeds)   │
                                                              │   Sentry (errors)          │
                                                              └───────────────────────────┘
 ```
 
-Deploy: all infrastructure on AWS, defined in **CDK (TypeScript)** — two ECS Fargate services (web, worker), ALB + CloudFront, RDS Postgres, S3 + MediaConvert, SES, Secrets Manager, CloudWatch; staging and production in separate AWS accounts. CI on GitHub Actions (OIDC into AWS, no long-lived keys): typecheck, unit/property tests, state-machine exhaustiveness check, AI golden-set evals, migration dry-run; `cdk deploy` to staging on merge → manual-promote to production.
+Deploy: all infrastructure on AWS, defined in **CDK (TypeScript)** — App Runner service (web; auto-deploys on ECR push), one t4g EC2 instance running the worker container (redeploy via SSM command), RDS Postgres (single-AZ at launch, Multi-AZ flip when revenue justifies), S3 + CloudFront, SES, Secrets Manager, CloudWatch alarms; staging and production in separate AWS accounts. CI on GitHub Actions (OIDC into AWS, no long-lived keys): typecheck, unit/property tests, state-machine exhaustiveness check, AI golden-set evals, migration dry-run; deploy to staging on merge → manual-promote to production.
 
 ## 4. Domain model (core tables, abridged)
 
@@ -84,10 +86,11 @@ venues           (id, metro_id, kind, name, bio, geo point, capacity, room jsonb
 techs            (id, user_id, bio, gear: none|partial|full_rig, rig_specs jsonb,
                   rate_labor, rate_with_rig, travel_radius_km)
 coi_documents    (id, owner_role_id, file, insurer, expires_on, verified_by)
-media_assets     (id, owner_role_id, kind: image|audio|video, s3_key, bytes, duration_s,
+media_assets     (id, owner_role_id, kind: image|audio|video_embed,
+                  s3_key?, bytes?, duration_s?,                           -- uploads (image/audio)
+                  embed_url?, embed_meta jsonb?,                          -- video (YouTube/Vimeo oEmbed)
                   status: uploaded|processing|ready|rejected,
-                  renditions jsonb {hls, aac, posters[], waveform, responsive[]},
-                  fraud_screen_ref, position int)                         -- §8 pipeline; profile ordering
+                  renditions jsonb {responsive[]}, fraud_screen_ref, position int)  -- §8; profile ordering
 
 -- marketplace --------------------------------------------------------------
 slot_series      (id, venue_id, recurrence rule, defaults jsonb, status)
@@ -179,17 +182,17 @@ soundPlan(venuePA, performerNeeds) → { verdict: covered | tech_needed | tech_a
 - Verdict drives slot UX ("this gig needs sound — add a tech sub-slot?") and the tech brief (F-AI.12: the brief is a *template over structured data*, with an LLM polish pass that cannot alter facts).
 - The AI's only role in this subsystem is **extraction**: photo/free-text → draft `pa_inventory`/`tech_needs` JSON (task `gear_extract`, §9), human-confirmed before the engine consumes it. Confidence below threshold → field left empty and asked explicitly. Garbage-in is the engine's only failure mode, so extraction review UX is part of this feature, not separate.
 
-## 8. Media pipeline (native hosting of photos, audio, video — K8)
+## 8. Media (photos + audio uploaded; video embedded — K8)
 
-Profiles are the storefront: performers (and venues, for room photos) upload media directly; we host and serve it.
+Profiles are the storefront. We host the two things that have no good embed story (photos, audio files) and embed the thing that does (video).
 
-- **Upload:** browser → presigned S3 POST, constrained by kind (content-type, max size) and by remaining profile quota; uploads never transit our servers.
-- **Processing (worker jobs off S3 events):** images → EXIF-strip + responsive renditions; audio → AAC + waveform JSON; video → MediaConvert HLS ladder (720p ceiling at MVP) + poster frames. `media_assets.status`: uploaded → processing → ready | rejected.
-- **Screening before visibility:** every asset runs `media_fraud_screen` (F7.5) plus virus scan and content-type sniffing during processing; nothing is publicly served until `ready`.
+- **Photos (uploaded):** browser → presigned S3 POST (content-type/size constrained, quota-checked) → worker job: EXIF-strip + responsive renditions (sharp) → CloudFront. Venues upload room photos through the same path.
+- **Audio (uploaded, stored as-is):** MP3/M4A, ≤25MB / ≤15 min per track, validated and served directly via CloudFront into an HTML5 player. **No transcode service** — what's uploaded is what plays. (Waveform rendering is a later nicety, computable in the worker if wanted.)
+- **Video (embed-only):** YouTube or Vimeo URLs; we fetch oEmbed metadata, cache the title/thumbnail, and render the official embed player. No video storage, no MediaConvert, no transcode pipeline — most working acts already have a YouTube link, and `profile_ingest` (F1.8) discovers it automatically.
+- **Screening before visibility:** uploads run `media_fraud_screen` (F7.5) + virus scan + content-type sniffing during processing; embeds are screened on their fetched metadata/thumbnail. `media_assets.status`: uploaded → processing → ready | rejected; nothing public until `ready`.
 - **Delivery:** CloudFront over S3 — public cache paths for profile media, signed URLs for private documents (COIs, stage plots).
-- **Quotas (cost containment, config-driven):** per profile ≈ 20 photos, 10 audio tracks (≤15 min each), 5 video clips (≤5 min each); hard per-file size caps enforced at presign time. Raised when revenue justifies.
-- **Lifecycle:** S3 versioning; lifecycle rules purge abandoned multipart uploads and rejected assets (30 days); deletes cascade from profile edits and account deletion (§11).
-- External links (YouTube/Bandcamp/Instagram) remain supported as embeds alongside hosted media — but are never *required*.
+- **Quotas (config-driven):** ≈ 20 photos, 10 audio tracks, 5 video embeds per profile; per-file caps enforced at presign time.
+- **Lifecycle:** S3 lifecycle rules purge abandoned multipart uploads and rejected assets (30 days); deletes cascade from profile edits and account deletion (§11). Embed rot (deleted YouTube videos) detected by a weekly oEmbed recheck job that flags dead links to the owner.
 
 ## 9. AI subsystem (the gateway — K9)
 
@@ -252,9 +255,9 @@ Profiles are the storefront: performers (and venues, for room photos) upload med
 
 | Milestone | Scope | Exit criteria |
 |---|---|---|
-| **M0 — Walking skeleton** (wk 1–3) | Auth, profiles with bios + photo upload + inquiry messaging, slot post/feed/apply, offer→accept with NO payments (terms recorded, pay-direct), events table, CDK + deploy pipeline to AWS | A real venue messages and books a real performer end-to-end in staging; events show the full story |
+| **M0 — Walking skeleton** (wk 1–3) | Auth, profiles with bios + photo upload + YouTube/Vimeo embeds + inquiry messaging, slot post/feed/apply, offer→accept with NO payments (terms recorded, pay-direct), events table, CDK + deploy pipeline to AWS | A real venue messages and books a real performer end-to-end in staging; events show the full story |
 | **M1 — Money** (wk 4–7) | Full state machine, Stripe Connect Express, charge/hold/release, ledger + reconciliation, cancellation fees, click-wrap contracts, critical-path notifications (SMS/email) | Property suite green; test-mode lifecycle incl. disputes and both cancel branches; reconciliation catches seeded faults |
-| **M2 — AI & the third side** (wk 8–11) | AI gateway + `profile_ingest`, `slot_parse` (SMS posting), `gear_extract`, sound-plan engine, tech sub-slots on the same rails, review system, audio/video hosting pipeline (MediaConvert HLS + AAC) | <5-min link-in onboarding measured with 10 real performers; SMS slot post → confirmed booking demonstrated; tech books through a sub-slot; uploaded video plays back via HLS |
+| **M2 — AI & the third side** (wk 8–11) | AI gateway + `profile_ingest`, `slot_parse` (SMS posting), `gear_extract`, sound-plan engine, tech sub-slots on the same rails, review system, audio track uploads | <5-min link-in onboarding measured with 10 real performers; SMS slot post → confirmed booking demonstrated; tech books through a sub-slot; uploaded audio plays on a profile |
 | **M3 — Launch hardening** (wk 12–14) | `media_fraud_screen`, `support_triage`, dispute flow + ops dashboard, liquidity dashboard, iCal, rate limits, backup-restore drill, load test at 100× | Ops can run a dispute start-to-finish; on-call runbook exists; Phase 0 anchor venues onboarded to staging |
 
 Deliberately deferred (with their seams): replacement engine (consumes `cancelled_by_performer` events), split payouts (ledger rows already per-member), promotion generation (consumes `confirmed` events), POS integration (joins `venue_night_facts`), native apps (PWA until push becomes the binding constraint), ML ranking (pgvector columns waiting).
