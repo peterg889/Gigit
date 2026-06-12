@@ -4,3 +4,4 @@ export * from "./booking/machine.js";
 export * from "./cancellation.js";
 export * from "./soundplan.js";
 export * from "./schemas.js";
+export * from "./agreement.js";

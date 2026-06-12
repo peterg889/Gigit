@@ -12,11 +12,13 @@ import {
   closeDb,
   getPool,
   runBookingTransition,
+  paymentGateway,
   IllegalTransitionError,
   BookingNotFoundError,
 } from "@gigit/db";
 import type { BookingEvent, Effect } from "@gigit/domain";
 import PgBoss from "pg-boss";
+import { notifyBookingParties } from "./notify.js";
 
 const TIMER_QUEUE = "booking-timers";
 type TimerJob = {
@@ -122,6 +124,7 @@ async function dispatchEvent(
   boss: PgBoss,
   row: {
     id: string;
+    actor: string;
     kind: string;
     subject_type: string;
     subject_id: string;
@@ -148,19 +151,39 @@ async function dispatchEvent(
         // Timers are idempotent no-ops when stale; explicit cancellation unnecessary.
         break;
       case "request_payment": {
-        // M0 NullPaymentGateway (engineering-spec: full machine, payments stubbed).
-        await fireBookingEvent(row.subject_id, { kind: "PAYMENT_SUCCEEDED" });
+        const result = await paymentGateway().charge(row.subject_id);
+        log("payment.charge", { booking: row.subject_id, ...result });
+        if (result.status === "succeeded")
+          await fireBookingEvent(row.subject_id, { kind: "PAYMENT_SUCCEEDED" });
+        else if (result.status === "failed")
+          await fireBookingEvent(row.subject_id, {
+            kind: "PAYMENT_FAILED",
+            reason: result.paymentRef,
+          });
+        // pending → the Stripe webhook (web service) delivers the outcome
         break;
       }
       case "notify":
-        // M1 wires Twilio/SES here. M0: structured log is the notification sink.
-        log("notify", { to: fx.to, template: fx.template, subject: row.subject_id });
+        if (row.subject_type === "booking")
+          await notifyBookingParties(row.subject_id, fx.template, fx.to);
+        else if (row.actor.startsWith("usr_"))
+          // non-booking notifications (messages, applications) reach the
+          // counterparty via thread participants in M2; log for now
+          log("notify", { to: fx.to, template: fx.template, subject: row.subject_id });
         break;
       case "release_funds":
+        await paymentGateway().transfer(row.subject_id, fx.amountCents);
+        log("payment.release", { booking: row.subject_id, amount: fx.amountCents });
+        break;
       case "refund_funds":
+        await paymentGateway().refund(row.subject_id, fx.amountCents);
+        log("payment.refund", { booking: row.subject_id, amount: fx.amountCents });
+        break;
       case "cancellation_fee":
-        // M1: ledger + Stripe. M0 records intent in the event payload only.
-        log("money.intent", { fx, subject: row.subject_id });
+        if (fx.feeCents > 0) await paymentGateway().transfer(row.subject_id, fx.feeCents);
+        if (fx.refundCents > 0)
+          await paymentGateway().refund(row.subject_id, fx.refundCents);
+        log("payment.cancellation_fee", { booking: row.subject_id, ...fx });
         break;
       case "reopen_slot":
       case "reliability_strike":

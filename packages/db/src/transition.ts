@@ -11,6 +11,7 @@ import {
 import { and, eq, ne, sql } from "drizzle-orm";
 import { db } from "./client.js";
 import { appendEvent } from "./events.js";
+import { recordLedgerEntry } from "./ledger.js";
 import { applications, bookings, performers, slots } from "./schema.js";
 
 export class BookingNotFoundError extends Error {
@@ -72,8 +73,56 @@ export async function runBookingTransition(
       .returning({ id: bookings.id });
     if (updated.length === 0) throw new ConcurrentUpdateError(bookingId);
 
+    // Money intents are ledgered atomically with the transition (K3/K5).
+    const venueParty = `venue:${row.venueId}`;
+    const performerParty = `performer:${row.performerId}`;
+    if (event.kind === "PAYMENT_SUCCEEDED") {
+      await recordLedgerEntry(tx, {
+        bookingId,
+        entryType: "charge",
+        debitParty: venueParty,
+        creditParty: "platform",
+        amountCents: snapshot.terms.amountCents,
+        ...(row.paymentRef ? { paymentRef: row.paymentRef } : {}),
+      });
+    }
+
     // In-transaction side effects the db layer owns:
     for (const fx of decision.effects) {
+      if (fx.kind === "release_funds") {
+        await recordLedgerEntry(tx, {
+          bookingId,
+          entryType: "release",
+          debitParty: "platform",
+          creditParty: performerParty,
+          amountCents: fx.amountCents,
+        });
+      }
+      if (fx.kind === "refund_funds") {
+        await recordLedgerEntry(tx, {
+          bookingId,
+          entryType: "refund",
+          debitParty: "platform",
+          creditParty: venueParty,
+          amountCents: fx.amountCents,
+        });
+      }
+      if (fx.kind === "cancellation_fee") {
+        await recordLedgerEntry(tx, {
+          bookingId,
+          entryType: "fee",
+          debitParty: "platform",
+          creditParty: performerParty,
+          amountCents: fx.feeCents,
+        });
+        await recordLedgerEntry(tx, {
+          bookingId,
+          entryType: "refund",
+          debitParty: "platform",
+          creditParty: venueParty,
+          amountCents: fx.refundCents,
+        });
+      }
       if (fx.kind === "reopen_slot") {
         await tx
           .update(slots)

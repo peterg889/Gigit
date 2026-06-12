@@ -1,0 +1,154 @@
+/**
+ * Gigit infrastructure (engineering-spec K11): deliberately minimal —
+ * App Runner (web) + one small EC2 (worker) + RDS + S3/CloudFront + SES.
+ * No Fargate, no ALB, no cluster.
+ */
+import * as cdk from "aws-cdk-lib";
+import * as apprunner from "aws-cdk-lib/aws-apprunner";
+import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecr from "aws-cdk-lib/aws-ecr";
+import * as iam from "aws-cdk-lib/aws-iam";
+import * as rds from "aws-cdk-lib/aws-rds";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import { Construct } from "constructs";
+
+export interface GigitStackProps extends cdk.StackProps {
+  stage: "staging" | "prod";
+}
+
+export class GigitStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: GigitStackProps) {
+    super(scope, id, props);
+    const prod = props.stage === "prod";
+
+    const vpc = new ec2.Vpc(this, "Vpc", { maxAzs: 2, natGateways: 0 });
+
+    // ── data ────────────────────────────────────────────────────────────────
+    const dbSecret = new secretsmanager.Secret(this, "DbSecret", {
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({ username: "gigit" }),
+        generateStringKey: "password",
+        excludePunctuation: true,
+      },
+    });
+    const database = new rds.DatabaseInstance(this, "Db", {
+      engine: rds.DatabaseInstanceEngine.postgres({
+        version: rds.PostgresEngineVersion.VER_16,
+      }),
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC }, // SG-restricted; private subnets need NAT
+      instanceType: ec2.InstanceType.of(
+        ec2.InstanceClass.T4G,
+        prod ? ec2.InstanceSize.SMALL : ec2.InstanceSize.MICRO,
+      ),
+      credentials: rds.Credentials.fromSecret(dbSecret),
+      databaseName: "gigit",
+      multiAz: false, // single-AZ at launch; flip when revenue justifies (K11)
+      allocatedStorage: 20,
+      backupRetention: cdk.Duration.days(prod ? 14 : 3),
+      deletionProtection: prod,
+    });
+
+    // ── media (S3 + CloudFront) ─────────────────────────────────────────────
+    const media = new s3.Bucket(this, "Media", {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.PUT],
+          allowedOrigins: ["*"], // tightened to APP_URL post-DNS
+          allowedHeaders: ["*"],
+        },
+      ],
+      lifecycleRules: [{ abortIncompleteMultipartUploadAfter: cdk.Duration.days(2) }],
+    });
+    const cdn = new cloudfront.Distribution(this, "MediaCdn", {
+      defaultBehavior: {
+        origin: origins.S3BucketOrigin.withOriginAccessControl(media),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+      },
+    });
+
+    // ── container registries ────────────────────────────────────────────────
+    const webRepo = new ecr.Repository(this, "WebRepo", {
+      repositoryName: `gigit-web-${props.stage}`,
+    });
+    const workerRepo = new ecr.Repository(this, "WorkerRepo", {
+      repositoryName: `gigit-worker-${props.stage}`,
+    });
+
+    // ── app secrets (DATABASE_URL, SESSION_SECRET, STRIPE_*, TWILIO_*) ──────
+    const appSecrets = new secretsmanager.Secret(this, "AppSecrets", {
+      description: "Gigit application env (filled manually per stage)",
+    });
+
+    // ── web: App Runner from ECR ────────────────────────────────────────────
+    const accessRole = new iam.Role(this, "AppRunnerAccessRole", {
+      assumedBy: new iam.ServicePrincipal("build.apprunner.amazonaws.com"),
+    });
+    webRepo.grantPull(accessRole);
+    const instanceRole = new iam.Role(this, "AppRunnerInstanceRole", {
+      assumedBy: new iam.ServicePrincipal("tasks.apprunner.amazonaws.com"),
+    });
+    media.grantReadWrite(instanceRole);
+    appSecrets.grantRead(instanceRole);
+
+    new apprunner.CfnService(this, "Web", {
+      serviceName: `gigit-web-${props.stage}`,
+      sourceConfiguration: {
+        authenticationConfiguration: { accessRoleArn: accessRole.roleArn },
+        autoDeploymentsEnabled: true,
+        imageRepository: {
+          imageIdentifier: `${webRepo.repositoryUri}:latest`,
+          imageRepositoryType: "ECR",
+          imageConfiguration: { port: "3000" },
+        },
+      },
+      instanceConfiguration: {
+        cpu: prod ? "1 vCPU" : "0.5 vCPU",
+        memory: prod ? "2 GB" : "1 GB",
+        instanceRoleArn: instanceRole.roleArn,
+      },
+    });
+
+    // ── worker: one small EC2 running the container (K11) ──────────────────
+    const workerSg = new ec2.SecurityGroup(this, "WorkerSg", { vpc });
+    database.connections.allowFrom(workerSg, ec2.Port.tcp(5432));
+    const workerRole = new iam.Role(this, "WorkerRole", {
+      assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonSSMManagedInstanceCore"),
+      ],
+    });
+    workerRepo.grantPull(workerRole);
+    appSecrets.grantRead(workerRole);
+    workerRole.addToPolicy(
+      new iam.PolicyStatement({ actions: ["ses:SendEmail"], resources: ["*"] }),
+    );
+
+    const userData = ec2.UserData.forLinux();
+    userData.addCommands(
+      "dnf install -y docker && systemctl enable --now docker",
+      `aws ecr get-login-password --region ${this.region} | docker login --username AWS --password-stdin ${workerRepo.repositoryUri.split("/")[0]}`,
+      // env is materialized from Secrets Manager by the redeploy script (SSM doc, M1 follow-up)
+      `docker run -d --restart=always --name worker ${workerRepo.repositoryUri}:latest`,
+    );
+    new ec2.Instance(this, "Worker", {
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.SMALL),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023({
+        cpuType: ec2.AmazonLinuxCpuType.ARM_64,
+      }),
+      securityGroup: workerSg,
+      role: workerRole,
+      userData,
+    });
+
+    new cdk.CfnOutput(this, "MediaCdnDomain", { value: cdn.distributionDomainName });
+    new cdk.CfnOutput(this, "DbEndpoint", { value: database.instanceEndpoint.hostname });
+  }
+}

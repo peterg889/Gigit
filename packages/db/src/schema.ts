@@ -65,6 +65,7 @@ export const performers = pgTable("performers", {
     .default({ inputs: 0 }),
   reliabilityStrikes: integer("reliability_strikes").notNull().default(0),
   status: text("status").notNull().default("live"), // draft | pending_review | live
+  stripeAccountId: text("stripe_account_id"), // Connect Express (payout destination)
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
@@ -91,6 +92,7 @@ export const venues = pgTable("venues", {
     .notNull()
     .default({ hasPA: false }),
   noiseCurfew: text("noise_curfew"),
+  stripeCustomerId: text("stripe_customer_id"), // saved payment method holder
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
@@ -199,7 +201,8 @@ export const bookings = pgTable(
       }>()
       .notNull(),
     offerExpiresAt: ts("offer_expires_at").notNull(),
-    agreementTemplateVer: text("agreement_template_ver").notNull().default("v0"),
+    agreementTemplateVer: text("agreement_template_ver").notNull().default("v1"),
+    paymentRef: text("payment_ref"), // PaymentIntent id once charged
     venueAcceptedAt: ts("venue_accepted_at"),
     performerAcceptedAt: ts("performer_accepted_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
@@ -246,6 +249,32 @@ export const messages = pgTable(
   },
   (t) => [index("messages_thread_idx").on(t.threadId, t.createdAt)],
 );
+
+// ── money: intent ledger (engineering-spec K3 — append-only) ────────────────
+export const ledgerEntries = pgTable(
+  "ledger_entries",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    bookingId: text("booking_id").references(() => bookings.id),
+    entryType: text("entry_type").notNull(), // charge | release | refund | fee | adjustment
+    debitParty: text("debit_party").notNull(), // venue:<id> | platform | performer:<id>
+    creditParty: text("credit_party").notNull(),
+    amountCents: integer("amount_cents").notNull(),
+    paymentRef: text("payment_ref"), // Stripe object id (pi_/tr_/re_) or null_*
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("ledger_idem_uq").on(t.idempotencyKey),
+    index("ledger_booking_idx").on(t.bookingId),
+  ],
+);
+
+export const webhookEvents = pgTable("webhook_events", {
+  id: text("id").primaryKey(), // provider event id (evt_…)
+  provider: text("provider").notNull().default("stripe"),
+  receivedAt: ts("received_at").notNull().defaultNow(),
+});
 
 // ── events: outbox + audit + analytics (append-only) ────────────────────────
 export const events = pgTable(

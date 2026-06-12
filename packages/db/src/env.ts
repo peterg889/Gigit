@@ -7,6 +7,14 @@ const envSchema = z.object({
   STORAGE_DRIVER: z.enum(["local", "s3"]).default("local"),
   S3_BUCKET: z.string().optional(),
   AWS_REGION: z.string().default("us-east-1"),
+  // Payments: unset → NullGateway (dev). Both required together for Stripe.
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  // Notifications: unset → structured-log sink (dev).
+  TWILIO_ACCOUNT_SID: z.string().optional(),
+  TWILIO_AUTH_TOKEN: z.string().optional(),
+  TWILIO_FROM: z.string().optional(),
+  EMAIL_FROM: z.string().optional(), // SES verified sender
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),

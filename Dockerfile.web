@@ -1,0 +1,17 @@
+# Web service (App Runner) — engineering-spec K11
+FROM node:22-alpine AS build
+RUN corepack enable
+WORKDIR /app
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY packages ./packages
+COPY apps/web ./apps/web
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter './packages/*' build && pnpm --filter @gigit/web build
+
+FROM node:22-alpine
+RUN corepack enable
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app ./
+EXPOSE 3000
+CMD ["pnpm", "--filter", "@gigit/web", "start"]
