@@ -1,0 +1,30 @@
+{
+  "name": "@gigit/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "next build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "next dev",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@gigit/db": "workspace:*",
+    "@gigit/domain": "workspace:*",
+    "drizzle-orm": "^0.44.7",
+    "jose": "^5.9.6",
+    "next": "^15.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.4",
+    "@types/react-dom": "^19.0.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

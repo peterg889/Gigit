@@ -1,0 +1,95 @@
+import { db, schema } from "@gigit/db";
+import { eq } from "drizzle-orm";
+import { notFound } from "next/navigation";
+import { performerOwnedBy, venueOwnedBy } from "@/lib/auth";
+import { sessionUserId } from "@/lib/session";
+import { ActionButton, ApiForm } from "@/components/ApiForm";
+
+export const dynamic = "force-dynamic";
+
+export default async function SlotPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const d = db();
+  const [row] = await d
+    .select({ slot: schema.slots, venue: schema.venues })
+    .from(schema.slots)
+    .innerJoin(schema.venues, eq(schema.slots.venueId, schema.venues.id))
+    .where(eq(schema.slots.id, id));
+  if (!row) notFound();
+  const { slot, venue } = row;
+
+  const userId = await sessionUserId();
+  const performer = userId ? await performerOwnedBy(userId) : null;
+  const myVenue = userId ? await venueOwnedBy(userId) : null;
+  const isOwner = myVenue?.id === venue.id;
+
+  const applicants = isOwner
+    ? await d
+        .select({ application: schema.applications, performer: schema.performers })
+        .from(schema.applications)
+        .innerJoin(
+          schema.performers,
+          eq(schema.applications.performerId, schema.performers.id),
+        )
+        .where(eq(schema.applications.slotId, slot.id))
+    : [];
+
+  return (
+    <div>
+      <div className="card">
+        <h1>
+          {venue.name} <span className="badge">{slot.format}</span>{" "}
+          <span className="badge">{slot.status}</span>
+        </h1>
+        <p>
+          {slot.startsAt.toLocaleString("en-US", {
+            dateStyle: "full",
+            timeStyle: "short",
+            timeZone: "UTC",
+          })}{" "}
+          · {slot.durationMinutes} min ·{" "}
+          <strong>${(slot.budgetCents / 100).toFixed(0)}</strong>
+        </p>
+        {slot.notes && <p>{slot.notes}</p>}
+        <p className="muted">
+          {venue.bio} · PA: {venue.paInventory.hasPA ? "house system" : "none"} ·
+          capacity {venue.capacity ?? "?"}
+        </p>
+        {performer && slot.status === "open" && (
+          <ActionButton
+            endpoint={`/api/slots/${slot.id}/applications`}
+            label="Apply for this slot"
+          />
+        )}
+      </div>
+
+      {isOwner && (
+        <div className="card">
+          <h2>Applicants ({applicants.length})</h2>
+          {applicants.map(({ application, performer: p }) => (
+            <div className="card" key={application.id}>
+              <strong>{p.name}</strong> <span className="badge">{p.kind}</span>{" "}
+              <span className="badge">{application.status}</span>
+              <p className="muted">{p.bio}</p>
+              {application.note && <p>“{application.note}”</p>}
+              {application.status === "submitted" && (
+                <ApiForm
+                  endpoint={`/api/applications/${application.id}/offer`}
+                  submitLabel="Send offer"
+                  fields={[
+                    {
+                      name: "amountCents",
+                      label: "Offer amount (USD)",
+                      type: "number",
+                      required: true,
+                    },
+                  ]}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

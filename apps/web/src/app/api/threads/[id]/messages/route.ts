@@ -1,0 +1,71 @@
+import { messageCreateSchema, newId } from "@gigit/domain";
+import { appendEvent, db, schema } from "@gigit/db";
+import { and, asc, eq } from "drizzle-orm";
+import { AuthError, requireUser } from "@/lib/auth";
+import { fail, ok, parseBody } from "@/lib/respond";
+
+type Params = { params: Promise<{ id: string }> };
+
+async function assertParticipant(threadId: string, userId: string) {
+  const [row] = await db()
+    .select()
+    .from(schema.threadParticipants)
+    .where(
+      and(
+        eq(schema.threadParticipants.threadId, threadId),
+        eq(schema.threadParticipants.userId, userId),
+      ),
+    );
+  return !!row;
+}
+
+export async function GET(_req: Request, { params }: Params) {
+  try {
+    const { id: threadId } = await params;
+    const userId = await requireUser();
+    if (!(await assertParticipant(threadId, userId)))
+      return fail("forbidden", "not a participant", 403);
+    const rows = await db()
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.threadId, threadId))
+      .orderBy(asc(schema.messages.createdAt))
+      .limit(200);
+    return ok({ messages: rows });
+  } catch (e) {
+    if (e instanceof AuthError) return fail("auth", e.message, e.status);
+    throw e;
+  }
+}
+
+export async function POST(req: Request, { params }: Params) {
+  try {
+    const { id: threadId } = await params;
+    const userId = await requireUser();
+    if (!(await assertParticipant(threadId, userId)))
+      return fail("forbidden", "not a participant", 403);
+    const parsed = await parseBody(req, messageCreateSchema);
+    if ("response" in parsed) return parsed.response;
+    const id = newId("message");
+    const d = db();
+    await d.insert(schema.messages).values({
+      id,
+      threadId,
+      senderUserId: userId,
+      body: parsed.data.body,
+    });
+    await appendEvent(d, {
+      actor: userId,
+      kind: "message.sent",
+      subjectType: "thread",
+      subjectId: threadId,
+      payload: {
+        effects: [{ kind: "notify", template: "new_message", to: "both" }],
+      },
+    });
+    return ok({ id }, 201);
+  } catch (e) {
+    if (e instanceof AuthError) return fail("auth", e.message, e.status);
+    throw e;
+  }
+}

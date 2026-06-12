@@ -1,0 +1,37 @@
+import { db, schema } from "@gigit/db";
+import { eq } from "drizzle-orm";
+import { AuthError, requireUser } from "@/lib/auth";
+import { fail, ok } from "@/lib/respond";
+import { IMAGE_MAX_BYTES, localWrite } from "@/lib/storage";
+
+type Params = { params: Promise<{ id: string }> };
+
+/** Local-driver upload sink (dev). With STORAGE_DRIVER=s3 the client PUTs to S3 instead. */
+export async function PUT(req: Request, { params }: Params) {
+  try {
+    const { id } = await params;
+    const userId = await requireUser();
+    const d = db();
+    const [asset] = await d
+      .select()
+      .from(schema.mediaAssets)
+      .where(eq(schema.mediaAssets.id, id));
+    if (!asset || asset.ownerUserId !== userId)
+      return fail("not_found", "media not found", 404);
+    if (asset.status !== "uploaded")
+      return fail("conflict", `asset is ${asset.status}`, 409);
+
+    const buf = Buffer.from(await req.arrayBuffer());
+    if (buf.byteLength === 0 || buf.byteLength > IMAGE_MAX_BYTES)
+      return fail("too_large", "invalid upload size", 422);
+    await localWrite(asset.storageKey!, buf);
+    await d
+      .update(schema.mediaAssets)
+      .set({ status: "processing", bytes: buf.byteLength })
+      .where(eq(schema.mediaAssets.id, id));
+    return ok({ id, status: "processing" });
+  } catch (e) {
+    if (e instanceof AuthError) return fail("auth", e.message, e.status);
+    throw e;
+  }
+}
