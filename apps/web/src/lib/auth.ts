@@ -30,6 +30,15 @@ export async function venueOwnedBy(userId: string) {
   return rows[0] ?? null;
 }
 
+/** Ops/admin = a row in actor_roles with kind 'admin' (inserted by ops). */
+export async function isAdmin(userId: string): Promise<boolean> {
+  const rows = await db()
+    .select()
+    .from(schema.actorRoles)
+    .where(eq(schema.actorRoles.userId, userId));
+  return rows.some((r) => r.kind === "admin");
+}
+
 export async function techOwnedBy(userId: string) {
   const rows = await db()
     .select()

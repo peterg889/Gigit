@@ -29,6 +29,20 @@ export const users = pgTable(
   ],
 );
 
+/** Out-of-band role grants (admin). Profile roles live on their own tables. */
+export const actorRoles = pgTable(
+  "actor_roles",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    kind: text("kind").notNull(), // admin
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("actor_roles_user_kind_uq").on(t.userId, t.kind)],
+);
+
 export const authOtps = pgTable("auth_otps", {
   id: text("id").primaryKey(),
   destination: text("destination").notNull(), // phone or email
