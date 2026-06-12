@@ -1,11 +1,10 @@
+import { visibleReviews } from "@gigit/domain";
 import { db, schema } from "@gigit/db";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { publicMediaUrl } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
-
-const VISIBILITY_DAYS = 7;
 
 /** Public performer EPK: bio, photos, audio, video embeds, reviews. */
 export default async function PerformerPage({
@@ -42,15 +41,7 @@ export default async function PerformerPage({
     .where(inArray(schema.reviews.bookingId, bookingsOfPerformer))
     .orderBy(desc(schema.reviews.createdAt))
     .limit(50);
-  const cutoff = Date.now() - VISIBILITY_DAYS * 86_400_000;
-  const visible = allReviews.filter(
-    (r) =>
-      r.authorRole === "venue" &&
-      (r.createdAt.getTime() < cutoff ||
-        allReviews.some(
-          (o) => o.bookingId === r.bookingId && o.authorRole === "performer",
-        )),
-  );
+  const visible = visibleReviews(allReviews, "venue");
   const avg =
     visible.length > 0
       ? visible.reduce((s, r) => s + (r.ratings.overall ?? 0), 0) / visible.length

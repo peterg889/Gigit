@@ -7,3 +7,4 @@ export * from "./schemas.js";
 export * from "./agreement.js";
 export * from "./recurrence.js";
 export * from "./subslot.js";
+export * from "./reviews.js";

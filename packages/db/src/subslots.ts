@@ -124,13 +124,15 @@ export async function runSubslotTransition(
     const techParty = `tech:${decision.techId ?? s.techId ?? "unassigned"}`;
     for (const fx of decision.effects) {
       if (fx.kind === "subslot_charge")
+        // version-keyed: a reopened sub-slot (tech cancelled, full refund)
+        // must charge AGAIN when re-booked — a stable key would swallow it
         await recordLedgerEntry(tx, {
           bookingId: s.bookingId,
           entryType: "charge",
           debitParty: payerParty,
           creditParty: "platform",
           amountCents: fx.amountCents,
-          idempotencyKey: `${subslotId}:charge`,
+          idempotencyKey: `${subslotId}:charge:${s.version}`,
         });
       else if (fx.kind === "subslot_release")
         await recordLedgerEntry(tx, {
@@ -158,7 +160,7 @@ export async function runSubslotTransition(
             debitParty: "platform",
             creditParty: techParty,
             amountCents: fx.feeCents,
-            idempotencyKey: `${subslotId}:fee`,
+            idempotencyKey: `${subslotId}:fee:${s.version}`,
           });
         if (fx.refundCents > 0)
           await recordLedgerEntry(tx, {
@@ -167,7 +169,7 @@ export async function runSubslotTransition(
             debitParty: "platform",
             creditParty: payerParty,
             amountCents: fx.refundCents,
-            idempotencyKey: `${subslotId}:refund`,
+            idempotencyKey: `${subslotId}:refund:fee:${s.version}`,
           });
       }
     }

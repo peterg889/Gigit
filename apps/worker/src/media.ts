@@ -35,7 +35,7 @@ const MAGIC: Array<{ kind: "image" | "audio"; test: (b: Buffer) => boolean }> = 
   { kind: "audio", test: (b) => b.subarray(4, 8).toString() === "ftyp" }, // m4a/mp4 container
 ];
 
-function sniffKind(bytes: Buffer): "image" | "audio" | "unknown" {
+export function sniffKind(bytes: Buffer): "image" | "audio" | "unknown" {
   for (const m of MAGIC) if (m.test(bytes)) return m.kind;
   return "unknown";
 }

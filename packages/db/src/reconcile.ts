@@ -10,7 +10,9 @@
  * Mismatches are paged (error-level log → Sentry when configured) and
  * recorded as events so the ops dashboard can show them.
  */
-import { appendEvent, db, env, getPool } from "@gigit/db";
+import { db, getPool } from "./client.js";
+import { env } from "./env.js";
+import { appendEvent } from "./events.js";
 
 export interface Mismatch {
   bookingId: string;

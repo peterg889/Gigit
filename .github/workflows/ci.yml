@@ -102,3 +102,44 @@ jobs:
             docker tag $REG/gigit-$app-staging:${{ github.sha }} $REG/gigit-$app-prod:latest
             docker push $REG/gigit-$app-prod:latest
           done
+
+  e2e:
+    needs: build-test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gigit
+          POSTGRES_PASSWORD: gigit
+          POSTGRES_DB: gigit
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gigit" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://gigit:gigit@localhost:5433/gigit
+      SESSION_SECRET: ci-session-secret-0123456789abcdef0123456789
+      APP_URL: http://localhost:3002
+      E2E_BASE_URL: http://localhost:3002
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:packages
+      - run: pnpm db:migrate && pnpm db:seed
+      - run: npx playwright install --with-deps chromium
+      - name: Start the stack
+        run: |
+          (pnpm --filter @gigit/web dev &) && (pnpm --filter @gigit/worker dev &)
+          npx wait-on http://localhost:3002 --timeout 120000
+      - run: pnpm e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: test-results/

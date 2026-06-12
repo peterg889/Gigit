@@ -9,7 +9,8 @@
     "dev": "pnpm --parallel --filter @gigit/web --filter @gigit/worker dev",
     "db:generate": "pnpm --filter @gigit/db generate",
     "db:migrate": "pnpm --filter @gigit/db migrate",
-    "db:seed": "pnpm --filter @gigit/db seed"
+    "db:seed": "pnpm --filter @gigit/db seed",
+    "e2e": "playwright test"
   },
   "engines": {
     "node": ">=22"
@@ -20,5 +21,9 @@
       "esbuild",
       "sharp"
     ]
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "wait-on": "^9.0.10"
   }
 }

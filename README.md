@@ -11,6 +11,7 @@ A three-sided marketplace connecting **bands & comedians**, **sound techs**, and
 | [`docs/engineering-spec.md`](docs/engineering-spec.md) | Architecture, the 11 load-bearing commitments, build plan |
 | [`docs/technical-design.md`](docs/technical-design.md) | Component-level technical design for the whole system as built — interfaces, data flows, assumptions, requirements, and the to-build list |
 | [`docs/prd-coverage.md`](docs/prd-coverage.md) | PRD requirement → design → implementation coverage matrix, with the live P0 gap list |
+| [`docs/testing.md`](docs/testing.md) | Testing strategy — layer map, risk-to-test coverage, known gaps |
 | [`docs/runbook.md`](docs/runbook.md) | On-call runbook — health checks, incident patterns, backup drill, load test, launch checklist |
 | [`docs/m0-technical-spec.md`](docs/m0-technical-spec.md) | Component-level spec for the M0 walking skeleton (historical; superseded by technical-design.md) |
 | [`research/`](research/) | Competitive landscape, metro selection, AI-era features, outreach API wishlist |

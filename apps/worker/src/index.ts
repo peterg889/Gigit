@@ -23,7 +23,12 @@ import PgBoss from "pg-boss";
 import * as Sentry from "@sentry/node";
 import { notifyBookingParties, notifySubslotParties, notifyUser } from "./notify.js";
 import { recheckEmbeds, screenMedia } from "./media.js";
-import { outboxLagMs, reconcileMoney } from "./reconcile-money.js";
+import {
+  matchSavedSearches,
+  outboxLagMs,
+  reconcileMoney,
+  snapshotNightFacts,
+} from "@gigit/db";
 
 if (process.env.SENTRY_DSN) Sentry.init({ dsn: process.env.SENTRY_DSN });
 
@@ -79,10 +84,13 @@ async function main() {
   // so gaps from worker downtime self-heal for yesterday.
   await boss.createQueue(NIGHT_FACTS_QUEUE);
   await boss.schedule(NIGHT_FACTS_QUEUE, "10 4 * * *");
-  await boss.work(NIGHT_FACTS_QUEUE, async () => snapshotNightFacts());
-  void snapshotNightFacts().catch((err) =>
-    log("nightfacts.error", { err: String(err) }),
-  );
+  await boss.work(NIGHT_FACTS_QUEUE, async () => {
+    const inserted = await snapshotNightFacts();
+    log("nightfacts.snapshot", { inserted });
+  });
+  void snapshotNightFacts()
+    .then((inserted) => log("nightfacts.snapshot", { inserted, at: "boot" }))
+    .catch((err) => log("nightfacts.error", { err: String(err) }));
 
   // Daily series sweep (PRD F2.2): keep every active series at full horizon
   // as occurrences pass. Also at boot so dev environments stay topped up.
@@ -278,21 +286,10 @@ async function dispatchEvent(
   // performer whose standing filter it matches. At-least-once like the rest
   // of the outbox; a duplicate notification beats a missed gig.
   if (row.kind === "slot.created") {
-    const { rows: matches } = await getPool().query(
-      `select distinct p.owner_user_id
-         from saved_searches ss
-         join performers p on p.id = ss.performer_id
-         join slots s on s.id = $1
-        where (ss.format is null or ss.format = s.format or s.format = 'either')
-          and (ss.metro is null or ss.metro = s.metro)
-          and (ss.min_budget_cents is null or s.budget_cents >= ss.min_budget_cents)`,
-      [row.subject_id],
-    );
-    for (const m of matches) {
-      await notifyUser(m.owner_user_id, "slot_match");
-    }
-    if (matches.length > 0)
-      log("alerts.slot_match", { slot: row.subject_id, notified: matches.length });
+    const userIds = await matchSavedSearches(row.subject_id);
+    for (const userId of userIds) await notifyUser(userId, "slot_match");
+    if (userIds.length > 0)
+      log("alerts.slot_match", { slot: row.subject_id, notified: userIds.length });
   }
 
   // Parent booking outcomes cascade into tech sub-slots (PRD F6.2): release
@@ -330,34 +327,6 @@ async function dispatchEvent(
       );
     }
   }
-}
-
-/** One row per venue per night (yesterday, UTC) — gig or not. Idempotent. */
-async function snapshotNightFacts() {
-  const yesterday = new Date(Date.now() - 24 * 3_600_000)
-    .toISOString()
-    .slice(0, 10);
-  const { rowCount } = await getPool().query(
-    `insert into venue_night_facts
-       (venue_id, night_date, day_of_week, had_booking, booking_id, format, budget_cents)
-     select v.id, $1::text, extract(dow from $1::date)::int,
-            b.id is not null, b.id, s.format, (b.terms->>'amountCents')::int
-       from venues v
-       left join lateral (
-         select * from bookings bk
-          where bk.venue_id = v.id
-            and bk.state in ('confirmed','awaiting_confirmation','released',
-                             'disputed','partially_released')
-            and (bk.terms->>'startsAt')::timestamptz >= $1::date
-            and (bk.terms->>'startsAt')::timestamptz < ($1::date + interval '1 day')
-          order by (bk.terms->>'startsAt')::timestamptz
-          limit 1
-       ) b on true
-       left join slots s on s.id = b.slot_id
-     on conflict (venue_id, night_date) do nothing`,
-    [yesterday],
-  );
-  log("nightfacts.snapshot", { night: yesterday, inserted: rowCount ?? 0 });
 }
 
 async function fireBookingEvent(bookingId: string, event: BookingEvent) {
