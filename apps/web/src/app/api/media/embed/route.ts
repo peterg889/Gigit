@@ -54,12 +54,12 @@ export async function POST(req: Request) {
             provider: meta.provider,
           }
         : {},
-      status: "ready",
+      status: "processing", // screened on metadata before visibility (F7.5)
       position: existing.length,
     });
     await appendEvent(d, {
       actor: userId,
-      kind: "media.embed_added",
+      kind: "media.screen_requested",
       subjectType: "media",
       subjectId: id,
       payload: { url: parsed.data.url },

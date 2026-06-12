@@ -29,6 +29,7 @@ export function ProfileIngestWidget() {
     kind: string;
     bio: string;
     genreTags: string[];
+    mediaLinks?: string[];
     confidenceNote: string;
   } | null>(null);
   const [homeMetro, setHomeMetro] = useState("");
@@ -36,8 +37,8 @@ export function ProfileIngestWidget() {
   return (
     <div>
       <p className="muted">
-        Or paste your YouTube / Bandcamp / website link and we’ll draft the
-        profile for you to review:
+        Or paste your YouTube / Bandcamp / website link — we&apos;ll draft the
+        profile, you approve every word. Nothing publishes until you say so.
       </p>
       <input
         placeholder="https://…"
@@ -63,7 +64,10 @@ export function ProfileIngestWidget() {
       {error && <p className="error">{error}</p>}
       {draft && (
         <div className="card">
-          <p className="muted">Review the draft — nothing publishes until you submit.</p>
+          <p className="muted">
+            Your draft. Fix anything we got wrong — it&apos;s your name on the
+            poster.
+          </p>
           <p className="muted">{draft.confidenceNote}</p>
           <label>Act name</label>
           <input
@@ -107,7 +111,13 @@ export function ProfileIngestWidget() {
               setBusy(true);
               setError(null);
               try {
-                await post("/api/performers", { ...draft, homeMetro });
+                const { mediaLinks, ...profile } = draft;
+                await post("/api/performers", { ...profile, homeMetro });
+                // videos found on their page attach as embeds (best effort —
+                // each one still goes through screening before it's public)
+                for (const url of mediaLinks ?? []) {
+                  await post("/api/media/embed", { url }).catch(() => null);
+                }
                 router.refresh();
               } catch (e) {
                 setError(String(e instanceof Error ? e.message : e));
@@ -140,10 +150,10 @@ export function SlotParseWidget() {
 
   return (
     <div className="card">
-      <h2>Describe it instead</h2>
+      <h2>Or just say the night</h2>
       <p className="muted">
-        e.g. “something chill for Sunday brunch, two hours, $200ish” — same
-        thing you’ll be able to text us.
+        “Something chill for Sunday brunch, two hours, $200ish” — the same thing
+        you&apos;ll soon be able to text us.
       </p>
       <textarea rows={2} value={text} onChange={(e) => setText(e.target.value)} />
       <button
@@ -160,7 +170,7 @@ export function SlotParseWidget() {
           setBusy(false);
         }}
       >
-        {busy ? "Parsing…" : "Parse"}
+        {busy ? "Reading…" : "Draft the slot"}
       </button>
       {error && <p className="error">{error}</p>}
       {draft && (
@@ -176,7 +186,7 @@ export function SlotParseWidget() {
               timeZone: "UTC",
             })}{" "}
             · {draft.durationMinutes} min ·{" "}
-            <strong>${(draft.budgetCents / 100).toFixed(0)}</strong>
+            <span className="money">${(draft.budgetCents / 100).toFixed(0)}</span>
           </p>
           {draft.notes && <p className="muted">{draft.notes}</p>}
           <button
@@ -203,8 +213,136 @@ export function SlotParseWidget() {
             Post this slot
           </button>
           {draft.budgetCents < 1 && (
-            <p className="muted">Add a budget — it’s required (pay transparency).</p>
+            <p className="muted">
+              Name the pay — every slot on Gigit shows its budget.
+            </p>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Photo-to-specs gear capture (F6.6 / F-AI.11) — the venue side. */
+export function GearExtractWidget({ venueId }: { venueId: string }) {
+  const router = useRouter();
+  const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{
+    hasPA: boolean;
+    mixerChannels: number;
+    micsAvailable: number;
+    monitors: number;
+    hasOperator: boolean;
+    uncertainties: string;
+  } | null>(null);
+
+  return (
+    <div>
+      <p className="muted">
+        Snap your PA / gear closet (or describe it) — we draft the room specs,
+        you confirm. This is what tells acts and techs what they&apos;re
+        walking into.
+      </p>
+      <textarea
+        rows={2}
+        placeholder="e.g. 12-channel Mackie, two mains, two wedges, 3 SM58s, nobody runs it"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <input
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+      />
+      <button
+        disabled={busy || (text.length < 5 && !file)}
+        onClick={async () => {
+          setBusy(true);
+          setError(null);
+          try {
+            let imageBase64: string | undefined;
+            let imageMimeType: string | undefined;
+            if (file) {
+              const buf = await file.arrayBuffer();
+              imageBase64 = btoa(
+                Array.from(new Uint8Array(buf), (b) => String.fromCharCode(b)).join(""),
+              );
+              imageMimeType = file.type;
+            }
+            const r = await post("/api/ai/gear-extract", {
+              description: text,
+              ...(imageBase64 ? { imageBase64, imageMimeType } : {}),
+            });
+            setDraft(r.draft);
+          } catch (e) {
+            setError(String(e instanceof Error ? e.message : e));
+          }
+          setBusy(false);
+        }}
+      >
+        {busy ? "Reading…" : "Draft my room specs"}
+      </button>
+      {error && <p className="error">{error}</p>}
+      {draft && (
+        <div className="card">
+          <p className="muted">
+            Check the counts — the sound plan is only as good as these numbers.
+          </p>
+          <label>PA?</label>
+          <select
+            value={String(draft.hasPA)}
+            onChange={(e) => setDraft({ ...draft, hasPA: e.target.value === "true" })}
+          >
+            <option value="true">yes</option>
+            <option value="false">no</option>
+          </select>
+          {(["mixerChannels", "micsAvailable", "monitors"] as const).map((k) => (
+            <div key={k}>
+              <label>{k}</label>
+              <input
+                type="number"
+                value={draft[k]}
+                onChange={(e) => setDraft({ ...draft, [k]: Number(e.target.value) })}
+              />
+            </div>
+          ))}
+          <label>Someone runs sound?</label>
+          <select
+            value={String(draft.hasOperator)}
+            onChange={(e) => setDraft({ ...draft, hasOperator: e.target.value === "true" })}
+          >
+            <option value="true">yes</option>
+            <option value="false">no</option>
+          </select>
+          {draft.uncertainties && <p className="muted">Unsure about: {draft.uncertainties}</p>}
+          <button
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setError(null);
+              try {
+                await post(`/api/venues/${venueId}`, {
+                  paInventory: {
+                    hasPA: draft.hasPA,
+                    mixerChannels: draft.mixerChannels,
+                    micsAvailable: draft.micsAvailable,
+                    monitors: draft.monitors,
+                    hasOperator: draft.hasOperator,
+                  },
+                });
+                setDraft(null);
+                router.refresh();
+              } catch (e) {
+                setError(String(e instanceof Error ? e.message : e));
+              }
+              setBusy(false);
+            }}
+          >
+            Save room specs
+          </button>
         </div>
       )}
     </div>

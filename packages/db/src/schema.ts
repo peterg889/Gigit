@@ -21,6 +21,7 @@ export const users = pgTable(
     phone: text("phone"),
     email: text("email"),
     status: text("status").notNull().default("active"), // active | suspended | deleted
+    smsOptedOutAt: ts("sms_opted_out_at"), // STOP compliance — no SMS while set
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (t) => [
@@ -83,6 +84,26 @@ export const performers = pgTable("performers", {
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
+// Split-payout seam (engineering-spec K3: "ledger rows per split from day
+// one"). Payouts stay single-target until P1; the table exists so splits are
+// never a retrofit.
+export const bandMembers = pgTable(
+  "band_members",
+  {
+    id: text("id").primaryKey(),
+    performerId: text("performer_id")
+      .notNull()
+      .references(() => performers.id),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    role: text("role").notNull().default("member"),
+    payoutSplitBps: integer("payout_split_bps").notNull().default(0), // basis points of the booking amount
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("band_members_uq").on(t.performerId, t.userId)],
+);
+
 export const venues = pgTable("venues", {
   id: text("id").primaryKey(),
   ownerUserId: text("owner_user_id")
@@ -107,6 +128,7 @@ export const venues = pgTable("venues", {
     .default({ hasPA: false }),
   noiseCurfew: text("noise_curfew"),
   stripeCustomerId: text("stripe_customer_id"), // saved payment method holder
+  defaultPaymentMethodId: text("default_payment_method_id"), // pm_… captured via setup-mode Checkout
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
@@ -147,6 +169,36 @@ export const mediaAssets = pgTable(
 );
 
 // ── marketplace ─────────────────────────────────────────────────────────────
+// Recurring series (PRD F2.2): a generator whose occurrences are ordinary
+// slot rows (materialize-next-N — engineering-spec open question #3 resolved).
+export const slotSeries = pgTable("slot_series", {
+  id: text("id").primaryKey(),
+  venueId: text("venue_id")
+    .notNull()
+    .references(() => venues.id),
+  metro: text("metro").notNull(),
+  pattern: jsonb("pattern")
+    .$type<{
+      freq: "weekly" | "monthly_dow";
+      dayOfWeek: number;
+      week?: 1 | 2 | 3 | 4 | 5;
+      startTimeUtc: string;
+      durationMinutes: number;
+    }>()
+    .notNull(),
+  defaults: jsonb("defaults")
+    .$type<{
+      format: string;
+      genrePrefs: string[];
+      budgetCents: number;
+      provides: { pa?: boolean; meal?: boolean; parking?: boolean };
+      notes?: string;
+    }>()
+    .notNull(),
+  status: text("status").notNull().default("active"), // active | paused | cancelled
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
 export const slots = pgTable(
   "slots",
   {
@@ -154,6 +206,7 @@ export const slots = pgTable(
     venueId: text("venue_id")
       .notNull()
       .references(() => venues.id),
+    seriesId: text("series_id").references(() => slotSeries.id),
     metro: text("metro").notNull(),
     startsAt: ts("starts_at").notNull(),
     durationMinutes: integer("duration_minutes").notNull(),
@@ -169,7 +222,28 @@ export const slots = pgTable(
     source: text("source").notNull().default("web"), // web | sms | api
     createdAt: ts("created_at").notNull().defaultNow(),
   },
-  (t) => [index("slots_feed_idx").on(t.status, t.startsAt)],
+  (t) => [
+    index("slots_feed_idx").on(t.status, t.startsAt),
+    // materializer idempotency: one slot per series occurrence
+    uniqueIndex("slots_series_occurrence_uq").on(t.seriesId, t.startsAt),
+  ],
+);
+
+// Saved-search alerts (PRD F2.3): a performer's standing filter; the worker
+// matches new slots against these and notifies on slot.created.
+export const savedSearches = pgTable(
+  "saved_searches",
+  {
+    id: text("id").primaryKey(),
+    performerId: text("performer_id")
+      .notNull()
+      .references(() => performers.id),
+    format: text("format"), // music | comedy | either | null = any
+    metro: text("metro"),
+    minBudgetCents: integer("min_budget_cents"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("saved_searches_performer_idx").on(t.performerId)],
 );
 
 export const applications = pgTable(
@@ -265,6 +339,23 @@ export const messages = pgTable(
 );
 
 // ── ai task log (engineering-spec K9: every model call recorded) ────────────
+// Fraud flags (PRD F7.5): screening output, consumed by the ops moderation
+// queue. `state`: open | cleared | upheld.
+export const fraudFlags = pgTable(
+  "fraud_flags",
+  {
+    id: text("id").primaryKey(),
+    subjectType: text("subject_type").notNull(), // media | performer | venue
+    subjectId: text("subject_id").notNull(),
+    kind: text("kind").notNull(), // content_type_mismatch | ai_screen | embed_dead | report
+    confidence: integer("confidence").notNull(), // 0–100
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
+    state: text("state").notNull().default("open"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("fraud_flags_state_idx").on(t.state), index("fraud_flags_subject_idx").on(t.subjectType, t.subjectId)],
+);
+
 export const aiTasks = pgTable("ai_tasks", {
   id: text("id").primaryKey(),
   taskType: text("task_type").notNull(), // profile_ingest | slot_parse | gear_extract
@@ -278,6 +369,49 @@ export const aiTasks = pgTable("ai_tasks", {
 });
 
 // ── reviews (PRD F7.1: double-blind; from completed platform bookings only) ──
+// ── tech sub-slots (PRD F6.2/F6.3 — the third side on the rails) ────────────
+export const techSubslots = pgTable(
+  "tech_subslots",
+  {
+    id: text("id").primaryKey(),
+    bookingId: text("booking_id")
+      .notNull()
+      .references(() => bookings.id),
+    payer: text("payer").notNull(), // venue | performer (who funds it)
+    budgetCents: integer("budget_cents").notNull(), // transparency applies here too
+    needs: jsonb("needs")
+      .$type<{
+        verdict: string;
+        gaps: string[];
+        inputs: number;
+        notes?: string;
+      }>()
+      .notNull(),
+    techId: text("tech_id").references(() => techs.id),
+    state: text("state").notNull().default("open"), // domain SubslotState
+    version: integer("version").notNull().default(1),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("tech_subslots_booking_idx").on(t.bookingId), index("tech_subslots_feed_idx").on(t.state)],
+);
+
+export const techSubslotApplications = pgTable(
+  "tech_subslot_applications",
+  {
+    id: text("id").primaryKey(),
+    subslotId: text("subslot_id")
+      .notNull()
+      .references(() => techSubslots.id),
+    techId: text("tech_id")
+      .notNull()
+      .references(() => techs.id),
+    note: text("note"),
+    status: text("status").notNull().default("submitted"), // submitted | booked | declined
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("tech_subslot_app_uq").on(t.subslotId, t.techId)],
+);
+
 export const reviews = pgTable(
   "reviews",
   {
@@ -311,6 +445,48 @@ export const ledgerEntries = pgTable(
     uniqueIndex("ledger_idem_uq").on(t.idempotencyKey),
     index("ledger_booking_idx").on(t.bookingId),
   ],
+);
+
+// ── SMS surface (PRD F2.8, engineering-spec §10) ────────────────────────────
+// Conversational state for the inbound router: one row per phone number,
+// holding whatever flow is mid-flight (e.g. a parsed slot awaiting "YES").
+export const smsSessions = pgTable("sms_sessions", {
+  phone: text("phone").primaryKey(),
+  activeContext: jsonb("active_context")
+    .$type<{
+      kind: "slot_draft";
+      draft: {
+        startsAt: string;
+        durationMinutes: number;
+        format: string;
+        budgetCents: number;
+        notes?: string;
+      };
+      venueId: string;
+    } | null>()
+    .default(null),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+// ── ROI-loop baseline (engineering-spec §12, PRD F8.5-P0) ────────────────────
+// One row per venue per night, gig or not — the Phase 2 POS comparison joins
+// against this. Accrues from MVP because it cannot be backfilled.
+export const venueNightFacts = pgTable(
+  "venue_night_facts",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    venueId: text("venue_id")
+      .notNull()
+      .references(() => venues.id),
+    nightDate: text("night_date").notNull(), // YYYY-MM-DD (metro-local once TZ lands; UTC at MVP)
+    dayOfWeek: integer("day_of_week").notNull(), // 0=Sun … 6=Sat
+    hadBooking: boolean("had_booking").notNull().default(false),
+    bookingId: text("booking_id").references(() => bookings.id),
+    format: text("format"), // music | comedy | either (from the slot)
+    budgetCents: integer("budget_cents"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("vnf_venue_night_uq").on(t.venueId, t.nightDate)],
 );
 
 export const webhookEvents = pgTable("webhook_events", {

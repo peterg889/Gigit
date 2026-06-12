@@ -82,8 +82,47 @@ export const slotCreateSchema = z
     message: "slot must be in the future",
   });
 
+// Recurring series (PRD F2.2): the first occurrence anchors the pattern.
+export const seriesCreateSchema = z
+  .object({
+    startsAt: z.string().datetime(), // first occurrence; weekday/time derive the pattern
+    durationMinutes: z.number().int().min(30).max(720),
+    freq: z.enum(["weekly", "monthly_dow"]),
+    format: z.enum(slotFormats),
+    genrePrefs: z.array(z.string().min(1).max(40)).max(10).default([]),
+    budgetCents: z.number().int().min(1), // transparency applies to every occurrence
+    provides: z
+      .object({
+        pa: z.boolean().optional(),
+        meal: z.boolean().optional(),
+        parking: z.boolean().optional(),
+      })
+      .default({}),
+    notes: z.string().max(2000).optional(),
+  })
+  .refine((s) => new Date(s.startsAt).getTime() > Date.now(), {
+    message: "first occurrence must be in the future",
+  });
+
 export const applicationCreateSchema = z.object({
   note: z.string().max(1000).optional(),
+});
+
+// Tech sub-slot (PRD F6.2): either party funds it; budget shown, as always.
+export const techSubslotCreateSchema = z.object({
+  payer: z.enum(["venue", "performer"]),
+  budgetCents: z.number().int().min(1),
+  notes: z.string().max(1000).optional(),
+});
+export const techSubslotBookSchema = z.object({
+  techId: z.string().min(1),
+});
+
+// Saved-search alert (PRD F2.3): all fields optional — empty = "any new slot".
+export const savedSearchCreateSchema = z.object({
+  format: z.enum(slotFormats).optional(),
+  metro: z.string().min(1).max(80).optional(),
+  minBudgetCents: z.number().int().min(0).optional(),
 });
 
 export const offerCreateSchema = z.object({

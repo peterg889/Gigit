@@ -1,10 +1,21 @@
 import { db, schema } from "@gigit/db";
 import { and, asc, eq, gte } from "drizzle-orm";
 import Link from "next/link";
+import { performerOwnedBy } from "@/lib/auth";
+import { sessionUserId } from "@/lib/session";
+import { ActionButton, ApiForm } from "@/components/ApiForm";
 
 export const dynamic = "force-dynamic";
 
 export default async function FeedPage() {
+  const userId = await sessionUserId();
+  const performer = userId ? await performerOwnedBy(userId) : null;
+  const searches = performer
+    ? await db()
+        .select()
+        .from(schema.savedSearches)
+        .where(eq(schema.savedSearches.performerId, performer.id))
+    : [];
   const rows = await db()
     .select({
       slot: schema.slots,
@@ -21,17 +32,56 @@ export default async function FeedPage() {
     <div>
       <h1>Open slots</h1>
       <p className="muted">
-        Venues post slots with the budget up front. Performers apply with one tap.
+        Every slot shows its pay up front. Your profile is the application — one
+        tap and you&apos;re in.
       </p>
       {rows.length === 0 && (
         <div className="card">
-          No open slots yet. Venues: <Link href="/slots/new">post one</Link>.
+          Nothing on the board yet. Venues:{" "}
+          <Link href="/slots/new">post the first slot</Link> — it takes three
+          minutes.
+        </div>
+      )}
+      {performer && (
+        <div className="card">
+          <h2>Slot alerts</h2>
+          {searches.length === 0 ? (
+            <p className="muted">
+              Save a search and we&apos;ll notify you the moment a matching slot
+              posts. Leave a field blank to match anything.
+            </p>
+          ) : (
+            searches.map((s) => (
+              <p key={s.id}>
+                <span className="badge">{s.format ?? "any format"}</span>{" "}
+                <span className="badge">{s.metro ?? "any metro"}</span>{" "}
+                {s.minBudgetCents != null && (
+                  <span className="money">${(s.minBudgetCents / 100).toFixed(0)}+</span>
+                )}{" "}
+                <ActionButton
+                  endpoint={`/api/saved-searches/${s.id}`}
+                  label="Remove"
+                  method="DELETE"
+                />
+              </p>
+            ))
+          )}
+          <ApiForm
+            endpoint="/api/saved-searches"
+            submitLabel="Save alert"
+            fields={[
+              { name: "format", label: "Format", type: "select", options: ["", "music", "comedy", "either"] },
+              { name: "metro", label: "Metro", placeholder: "e.g. milwaukee" },
+              { name: "minBudgetCents", label: "Minimum pay (USD)", type: "number", placeholder: "200" },
+            ]}
+          />
         </div>
       )}
       {rows.map(({ slot, venueName, venueKind }) => (
         <div className="card" key={slot.id}>
           <div>
             <span className="badge">{slot.format}</span>{" "}
+            {slot.seriesId && <span className="badge">recurring</span>}{" "}
             <strong>
               <Link href={`/slots/${slot.id}`}>{venueName}</Link>
             </strong>{" "}
@@ -44,7 +94,7 @@ export default async function FeedPage() {
               timeZone: "UTC",
             })}{" "}
             · {slot.durationMinutes} min ·{" "}
-            <strong>${(slot.budgetCents / 100).toFixed(0)}</strong>
+            <span className="money">${(slot.budgetCents / 100).toFixed(0)}</span>
           </div>
           {slot.notes && <div className="muted">{slot.notes}</div>}
         </div>

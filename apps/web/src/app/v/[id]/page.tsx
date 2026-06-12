@@ -92,8 +92,8 @@ export default async function VenuePage({
                 timeZone: "UTC",
               })}
             </Link>{" "}
-            · <span className="badge">{s.format}</span> · $
-            {(s.budgetCents / 100).toFixed(0)}
+            · <span className="badge">{s.format}</span> ·{" "}
+            <span className="money">${(s.budgetCents / 100).toFixed(0)}</span>
           </p>
         ))}
       </div>

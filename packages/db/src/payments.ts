@@ -29,6 +29,14 @@ export interface PaymentGateway {
   refund(bookingId: string, amountCents: number): Promise<void>;
   /** Create/refresh a Connect Express onboarding link for a performer. */
   connectOnboardingLink(performerId: string, returnUrl: string): Promise<string | null>;
+  /** Can this performer receive money? Gates offer acceptance (spec §6). */
+  performerPayoutReady(performerId: string): Promise<boolean>;
+  /** Hosted setup-mode Checkout to save a venue payment method. */
+  paymentSetupLink(venueId: string, returnUrl: string): Promise<string | null>;
+  /** Does the venue have a chargeable payment method? Gates sending offers. */
+  venuePaymentReady(venueId: string): Promise<boolean>;
+  /** Persist the payment method captured by a completed setup session. */
+  completeSetupSession(setupIntentId: string, venueId: string): Promise<void>;
 }
 
 class NullGateway implements PaymentGateway {
@@ -46,6 +54,16 @@ class NullGateway implements PaymentGateway {
   async connectOnboardingLink(): Promise<string | null> {
     return null;
   }
+  async performerPayoutReady(): Promise<boolean> {
+    return true; // dev: no money moves, nothing to gate
+  }
+  async paymentSetupLink(): Promise<string | null> {
+    return null;
+  }
+  async venuePaymentReady(): Promise<boolean> {
+    return true;
+  }
+  async completeSetupSession(): Promise<void> {}
 }
 
 class StripeGateway implements PaymentGateway {
@@ -63,7 +81,7 @@ class StripeGateway implements PaymentGateway {
       .innerJoin(venues, eq(bookings.venueId, venues.id))
       .where(eq(bookings.id, bookingId));
     if (!row) throw new Error(`booking ${bookingId} not found`);
-    if (!row.venue.stripeCustomerId)
+    if (!row.venue.stripeCustomerId || !row.venue.defaultPaymentMethodId)
       return { status: "failed", paymentRef: "no_payment_method" };
 
     const pi = await this.stripe.paymentIntents.create(
@@ -71,6 +89,7 @@ class StripeGateway implements PaymentGateway {
         amount: row.booking.terms.amountCents,
         currency: "usd",
         customer: row.venue.stripeCustomerId,
+        payment_method: row.venue.defaultPaymentMethodId,
         off_session: true,
         confirm: true,
         transfer_group: bookingId,
@@ -150,6 +169,61 @@ class StripeGateway implements PaymentGateway {
       return_url: returnUrl,
     });
     return link.url;
+  }
+
+  async performerPayoutReady(performerId: string): Promise<boolean> {
+    const [p] = await db()
+      .select({ stripeAccountId: performers.stripeAccountId })
+      .from(performers)
+      .where(eq(performers.id, performerId));
+    if (!p?.stripeAccountId) return false;
+    const account = await this.stripe.accounts.retrieve(p.stripeAccountId);
+    return account.payouts_enabled === true;
+  }
+
+  async paymentSetupLink(venueId: string, returnUrl: string): Promise<string | null> {
+    const d = db();
+    const [v] = await d.select().from(venues).where(eq(venues.id, venueId));
+    if (!v) return null;
+    let customerId = v.stripeCustomerId;
+    if (!customerId) {
+      const customer = await this.stripe.customers.create({
+        name: v.name,
+        metadata: { venueId },
+      });
+      customerId = customer.id;
+      await d
+        .update(venues)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(venues.id, venueId));
+    }
+    const session = await this.stripe.checkout.sessions.create({
+      mode: "setup",
+      customer: customerId,
+      payment_method_types: ["card"],
+      success_url: returnUrl,
+      cancel_url: returnUrl,
+      metadata: { venueId },
+    });
+    return session.url;
+  }
+
+  async venuePaymentReady(venueId: string): Promise<boolean> {
+    const [v] = await db()
+      .select({ defaultPaymentMethodId: venues.defaultPaymentMethodId })
+      .from(venues)
+      .where(eq(venues.id, venueId));
+    return !!v?.defaultPaymentMethodId;
+  }
+
+  async completeSetupSession(setupIntentId: string, venueId: string): Promise<void> {
+    const si = await this.stripe.setupIntents.retrieve(setupIntentId);
+    const pm = typeof si.payment_method === "string" ? si.payment_method : si.payment_method?.id;
+    if (!pm) throw new Error(`setup intent ${setupIntentId} has no payment method`);
+    await db()
+      .update(venues)
+      .set({ defaultPaymentMethodId: pm })
+      .where(eq(venues.id, venueId));
   }
 }
 

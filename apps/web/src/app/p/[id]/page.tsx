@@ -84,8 +84,11 @@ export default async function PerformerPage({
         <p>{p.bio}</p>
         {p.rateMinCents != null && p.rateMaxCents != null && (
           <p className="muted">
-            Typical rate: ${(p.rateMinCents / 100).toFixed(0)}–$
-            {(p.rateMaxCents / 100).toFixed(0)}
+            Typical rate:{" "}
+            <span className="money">
+              ${(p.rateMinCents / 100).toFixed(0)}–$
+              {(p.rateMaxCents / 100).toFixed(0)}
+            </span>
           </p>
         )}
       </div>

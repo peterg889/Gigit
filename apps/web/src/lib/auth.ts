@@ -11,6 +11,13 @@ export class AuthError extends Error {
 export async function requireUser(): Promise<string> {
   const userId = await sessionUserId();
   if (!userId) throw new AuthError(401, "sign in required");
+  // Suspension (F9.1) bites here so every mutation route inherits it.
+  const [user] = await db()
+    .select({ status: schema.users.status })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId));
+  if (user?.status === "suspended")
+    throw new AuthError(403, "This account is suspended. Contact support.");
   return userId;
 }
 

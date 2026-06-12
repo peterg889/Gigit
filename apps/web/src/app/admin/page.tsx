@@ -56,6 +56,10 @@ export default async function AdminPage() {
   return (
     <div>
       <h1>Liquidity</h1>
+      <p className="muted">
+        <Link href="/admin/search">Ops search</Link> ·{" "}
+        <Link href="/admin/moderation">Moderation queue</Link>
+      </p>
       <div className="card">
         <h2>Slots</h2>
         <Row k="Fill rate" v={`${fillRate}%`} />
@@ -69,7 +73,7 @@ export default async function AdminPage() {
         <Row k="Confirmed (upcoming)" v={bookings.confirmed} />
         <Row k="Released (completed)" v={bookings.released} />
         <Row k="Cancelled" v={bookings.cancelled} />
-        <Row k="Disputed (needs ops!)" v={bookings.disputed} />
+        <Row k="Disputed (a person needs to look)" v={bookings.disputed} />
       </div>
       <div className="card">
         <h2>Money (ledger)</h2>

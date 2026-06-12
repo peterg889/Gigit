@@ -34,3 +34,75 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @gigit/web build
+
+  # ── Deploy (engineering-spec §3: staging on merge → manual prod promote) ──
+  # Requires repo config: AWS_DEPLOY_ROLE_ARN (OIDC role), AWS_REGION,
+  # STAGING_DATABASE_URL secrets; a "production" environment with required
+  # reviewers gates the promote job.
+  deploy-staging:
+    needs: build-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC into AWS — no long-lived keys (K11)
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build and push images
+        run: |
+          REG=${{ steps.ecr.outputs.registry }}
+          docker build -f Dockerfile.web -t $REG/gigit-web-staging:latest -t $REG/gigit-web-staging:${{ github.sha }} .
+          docker build -f Dockerfile.worker -t $REG/gigit-worker-staging:latest -t $REG/gigit-worker-staging:${{ github.sha }} .
+          docker push --all-tags $REG/gigit-web-staging
+          docker push --all-tags $REG/gigit-worker-staging
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run migrations against staging
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: pnpm db:migrate
+      # web: App Runner auto-deploys on the :latest push (K11).
+      - name: Redeploy worker via SSM
+        run: |
+          IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:aws:cloudformation:stack-name,Values=GigitStaging" "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" --output text)
+          [ -z "$IDS" ] && { echo "no worker instance found"; exit 1; }
+          aws ssm send-command --instance-ids $IDS --document-name AWS-RunShellScript \
+            --parameters 'commands=["docker pull $(docker inspect --format={{.Config.Image}} worker)","docker rm -f worker","docker run -d --restart=always --name worker $(aws ecr describe-repositories --repository-names gigit-worker-staging --query repositories[0].repositoryUri --output text):latest"]'
+
+  promote-production:
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production # required-reviewer gate = the manual promote
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_PROD }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Retag staging images for production
+        run: |
+          REG=${{ steps.ecr.outputs.registry }}
+          for app in web worker; do
+            docker pull $REG/gigit-$app-staging:${{ github.sha }}
+            docker tag $REG/gigit-$app-staging:${{ github.sha }} $REG/gigit-$app-prod:latest
+            docker push $REG/gigit-$app-prod:latest
+          done

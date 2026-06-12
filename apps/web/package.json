@@ -7,7 +7,7 @@
     "build": "next build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "dev": "next dev",
+    "dev": "next dev -p 3002",
     "start": "next start"
   },
   "dependencies": {
@@ -15,6 +15,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1067.0",
     "@gigit/db": "workspace:*",
     "@gigit/domain": "workspace:*",
+    "@opentelemetry/api": "^1.9.1",
     "drizzle-orm": "^0.44.7",
     "jose": "^5.9.6",
     "next": "^15.1.6",

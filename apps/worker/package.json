@@ -11,11 +11,15 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1067.0",
     "@aws-sdk/client-sesv2": "^3.1067.0",
     "@gigit/db": "workspace:*",
     "@gigit/domain": "workspace:*",
+    "@sentry/node": "^10.57.0",
     "drizzle-orm": "^0.44.7",
-    "pg-boss": "^10.1.5"
+    "pg-boss": "^10.1.5",
+    "sharp": "^0.35.1",
+    "stripe": "^17.7.0"
   },
   "devDependencies": {
     "tsx": "^4.19.2",

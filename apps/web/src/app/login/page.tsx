@@ -28,6 +28,7 @@ export default function LoginPage() {
   return (
     <div className="card">
       <h1>Sign in</h1>
+      <p className="muted">No password — we&apos;ll send you a six-digit code.</p>
       {stage === "request" ? (
         <form
           onSubmit={async (e) => {
@@ -56,7 +57,7 @@ export default function LoginPage() {
             }
           }}
         >
-          <label htmlFor="code">6-digit code sent to {email}</label>
+          <label htmlFor="code">Enter the code we sent to {email}</label>
           <input
             id="code"
             value={code}

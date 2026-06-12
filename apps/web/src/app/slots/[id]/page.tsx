@@ -50,7 +50,7 @@ export default async function SlotPage({ params }: { params: Promise<{ id: strin
             timeZone: "UTC",
           })}{" "}
           · {slot.durationMinutes} min ·{" "}
-          <strong>${(slot.budgetCents / 100).toFixed(0)}</strong>
+          <span className="money">${(slot.budgetCents / 100).toFixed(0)}</span>
         </p>
         {slot.notes && <p>{slot.notes}</p>}
         <p className="muted">
@@ -90,22 +90,28 @@ export default async function SlotPage({ params }: { params: Promise<{ id: strin
               <p className="muted">{p.bio}</p>
               {application.note && <p>“{application.note}”</p>}
               {application.status === "submitted" && (
-                <ApiForm
-                  endpoint={`/api/applications/${application.id}/offer`}
-                  submitLabel="Send offer"
-                  fields={[
-                    {
-                      name: "amountCents",
-                      label: "Offer amount (USD)",
-                      type: "number",
-                      required: true,
-                    },
-                  ]}
-                />
+                <>
+                  <ApiForm
+                    endpoint={`/api/applications/${application.id}/offer`}
+                    submitLabel="Send offer"
+                    fields={[
+                      {
+                        name: "amountCents",
+                        label: "Offer ($)",
+                        type: "number",
+                        required: true,
+                      },
+                    ]}
+                  />
+                  <p className="muted">
+                    Terms lock when they accept — the contract and payment run
+                    through Gigit.
+                  </p>
+                </>
               )}
               {plan.verdict !== "covered" && (
                 <p className="muted">
-                  <Link href="/techs">Browse sound techs →</Link>
+                  <Link href="/techs">Find a tech for the night →</Link>
                 </p>
               )}
             </div>

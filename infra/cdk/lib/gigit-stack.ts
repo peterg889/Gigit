@@ -5,6 +5,9 @@
  */
 import * as cdk from "aws-cdk-lib";
 import * as apprunner from "aws-cdk-lib/aws-apprunner";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cwactions from "aws-cdk-lib/aws-cloudwatch-actions";
+import * as sns from "aws-cdk-lib/aws-sns";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
@@ -136,7 +139,7 @@ export class GigitStack extends cdk.Stack {
       // env is materialized from Secrets Manager by the redeploy script (SSM doc, M1 follow-up)
       `docker run -d --restart=always --name worker ${workerRepo.repositoryUri}:latest`,
     );
-    new ec2.Instance(this, "Worker", {
+    const worker = new ec2.Instance(this, "Worker", {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.SMALL),
@@ -148,6 +151,38 @@ export class GigitStack extends cdk.Stack {
       userData,
     });
 
+    // ── Alarms (technical-design §7.7): page a human, not a dashboard ──
+    const alerts = new sns.Topic(this, "OpsAlerts"); // subscribe email/SMS post-deploy
+    const page = new cwactions.SnsAction(alerts);
+    const alarm = (id: string, metric: cloudwatch.IMetric, threshold: number, opts?: Partial<cloudwatch.AlarmProps>) => {
+      const a = new cloudwatch.Alarm(this, id, {
+        metric: metric as cloudwatch.Metric,
+        threshold,
+        evaluationPeriods: 3,
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+        ...opts,
+      });
+      a.addAlarmAction(page);
+      return a;
+    };
+    alarm("DbCpuAlarm", database.metricCPUUtilization(), 90);
+    alarm("DbStorageAlarm", database.metricFreeStorageSpace(), 2 * 1024 ** 3, {
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+    });
+    alarm(
+      "WorkerStatusAlarm",
+      new cloudwatch.Metric({
+        namespace: "AWS/EC2",
+        metricName: "StatusCheckFailed",
+        dimensionsMap: { InstanceId: worker.instanceId },
+        statistic: "Maximum",
+        period: cdk.Duration.minutes(5),
+      }),
+      1,
+      { comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD },
+    );
+
+    new cdk.CfnOutput(this, "OpsAlertsTopic", { value: alerts.topicArn });
     new cdk.CfnOutput(this, "MediaCdnDomain", { value: cdn.distributionDomainName });
     new cdk.CfnOutput(this, "DbEndpoint", { value: database.instanceEndpoint.hostname });
   }

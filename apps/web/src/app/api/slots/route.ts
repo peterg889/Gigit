@@ -1,6 +1,6 @@
 import { newId, slotCreateSchema } from "@gigit/domain";
 import { appendEvent, db, schema } from "@gigit/db";
-import { and, asc, eq, gte } from "drizzle-orm";
+import { and, asc, eq, gte, sql } from "drizzle-orm";
 import { AuthError, requireUser, venueOwnedBy } from "@/lib/auth";
 import { fail, ok, parseBody } from "@/lib/respond";
 
@@ -41,17 +41,31 @@ export async function POST(req: Request) {
   }
 }
 
-/** Open-slot feed. M0 filters: format, metro, date floor. Geo radius arrives with PostGIS (M1). */
+/**
+ * Open-slot feed (PRD F2.3/F2.7 v1): format, metro, budget floor, and
+ * haversine radius on the venue's coordinates. Soonest-first ordering.
+ */
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const format = url.searchParams.get("format");
   const metro = url.searchParams.get("metro");
+  const minBudget = Number(url.searchParams.get("min_budget_cents")) || 0;
+  const lat = Number(url.searchParams.get("lat"));
+  const lng = Number(url.searchParams.get("lng"));
+  const radiusKm = Number(url.searchParams.get("radius_km"));
   const conditions = [
     eq(schema.slots.status, "open"),
     gte(schema.slots.startsAt, new Date()),
   ];
   if (format) conditions.push(eq(schema.slots.format, format));
   if (metro) conditions.push(eq(schema.slots.metro, metro));
+  if (minBudget > 0) conditions.push(gte(schema.slots.budgetCents, minBudget));
+  if (Number.isFinite(lat) && Number.isFinite(lng) && radiusKm > 0)
+    conditions.push(
+      sql`6371 * acos(least(1, cos(radians(${lat})) * cos(radians(${schema.venues.lat}))
+          * cos(radians(${schema.venues.lng}) - radians(${lng}))
+          + sin(radians(${lat})) * sin(radians(${schema.venues.lat})))) <= ${radiusKm}`,
+    );
 
   const rows = await db()
     .select({

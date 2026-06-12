@@ -44,7 +44,12 @@ export default async function BookingsPage() {
   return (
     <div>
       <h1>Bookings</h1>
-      {rows.length === 0 && <div className="card">No bookings yet.</div>}
+      {rows.length === 0 && (
+        <div className="card">
+          Nothing on the calendar yet. The <Link href="/">open slots</Link> are
+          the place to fix that.
+        </div>
+      )}
       {rows.map(({ booking, performerName, venueName }) => {
         const mineAsPerformer = performer?.id === booking.performerId;
         const cancellable = ["confirmed"].includes(booking.state);
@@ -62,7 +67,10 @@ export default async function BookingsPage() {
                 timeStyle: "short",
                 timeZone: "UTC",
               })}{" "}
-              · ${(booking.terms.amountCents / 100).toFixed(0)}
+              ·{" "}
+              <span className="money">
+                ${(booking.terms.amountCents / 100).toFixed(0)}
+              </span>
             </div>
             {mineAsPerformer && booking.state === "offered" && (
               <ActionButton

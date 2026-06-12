@@ -2,6 +2,7 @@ import {
   IllegalTransitionError,
   constructStripeEvent,
   db,
+  paymentGateway,
   runBookingTransition,
   schema,
 } from "@gigit/db";
@@ -51,6 +52,18 @@ export async function POST(req: Request) {
       }
     }
   }
+  // setup-mode Checkout completed → save the venue's payment method (F4.1)
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const venueId = session.metadata?.venueId;
+    const setupIntentId =
+      typeof session.setup_intent === "string"
+        ? session.setup_intent
+        : session.setup_intent?.id;
+    if (session.mode === "setup" && venueId && setupIntentId)
+      await paymentGateway().completeSetupSession(setupIntentId, venueId);
+  }
+
   // unknown event types are logged via the webhook_events row, never dropped silently
   return ok({ received: true });
 }

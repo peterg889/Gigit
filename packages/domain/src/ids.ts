@@ -13,6 +13,7 @@ export type BookingId = Id<"booking">;
 export type ThreadId = Id<"thread">;
 export type MessageId = Id<"message">;
 export type MediaId = Id<"media">;
+export type SeriesId = Id<"series">;
 
 const prefixes = {
   user: "usr",
@@ -26,6 +27,8 @@ const prefixes = {
   thread: "thr",
   message: "msg",
   media: "med",
+  series: "srs",
+  search: "sch",
 } as const;
 
 export function newId<K extends keyof typeof prefixes>(kind: K): Id<K> {

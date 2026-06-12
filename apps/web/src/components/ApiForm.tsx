@@ -54,6 +54,24 @@ export function ApiForm({
       body.ratings = { overall: body.overall };
       delete body.overall;
     }
+    if (transform === "ratingsMulti") {
+      const ratings: Record<string, number> = {};
+      for (const k of [
+        "overall",
+        "draw",
+        "professionalism",
+        "quality",
+        "hospitality",
+        "accuracy",
+        "payment",
+      ]) {
+        if (typeof body[k] === "number") {
+          ratings[k] = body[k] as number;
+          delete body[k];
+        }
+      }
+      body.ratings = ratings;
+    }
     if (transform === "genreTagsCsv" && typeof body.genreTags === "string") {
       body.genreTags = (body.genreTags as string)
         .split(",")
@@ -102,20 +120,57 @@ export function ApiForm({
         </div>
       ))}
       {error && <p className="error">{error}</p>}
-      <button disabled={busy}>{busy ? "…" : submitLabel}</button>
+      <button disabled={busy}>{busy ? "Working…" : submitLabel}</button>
     </form>
   );
 }
 
-/** One-click POST button (apply, accept, cancel). */
+/** POST then follow the returned {url} — Stripe-hosted flows (payouts, card setup). */
+export function RedirectButton({
+  endpoint,
+  label,
+}: {
+  endpoint: string;
+  label: string;
+}) {
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <span>
+      <button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          setNote(null);
+          const res = await fetch(endpoint, { method: "POST" });
+          const data = await res.json().catch(() => null);
+          setBusy(false);
+          if (!res.ok) {
+            setNote(data?.error?.message ?? `failed (${res.status})`);
+            return;
+          }
+          if (data?.url) window.location.href = data.url;
+          else setNote("Payments aren't configured in this environment — nothing to set up.");
+        }}
+      >
+        {busy ? "Working…" : label}
+      </button>
+      {note && <span className="muted"> {note}</span>}
+    </span>
+  );
+}
+
+/** One-click action button (apply, accept, cancel, remove). */
 export function ActionButton({
   endpoint,
   label,
   body,
+  method = "POST",
 }: {
   endpoint: string;
   label: string;
   body?: Record<string, unknown>;
+  method?: "POST" | "DELETE";
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -127,7 +182,7 @@ export function ActionButton({
         onClick={async () => {
           setBusy(true);
           const res = await fetch(endpoint, {
-            method: "POST",
+            method,
             headers: { "content-type": "application/json" },
             body: JSON.stringify(body ?? {}),
           });

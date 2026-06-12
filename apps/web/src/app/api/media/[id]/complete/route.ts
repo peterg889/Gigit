@@ -6,8 +6,9 @@ import { fail, ok } from "@/lib/respond";
 type Params = { params: Promise<{ id: string }> };
 
 /**
- * Flips processing → ready. The fraud-screen hook (F7.5) lands here in M3 —
- * the event below is the seam the screening task will consume.
+ * Upload complete → screening requested. The worker sniffs, strips EXIF,
+ * runs the fraud screen (F7.5), and only IT flips the asset to ready.
+ * Nothing is public before screening (technical-design A10).
  */
 export async function POST(_req: Request, { params }: Params) {
   try {
@@ -23,17 +24,13 @@ export async function POST(_req: Request, { params }: Params) {
     if (asset.status !== "processing")
       return fail("conflict", `asset is ${asset.status}`, 409);
 
-    await d
-      .update(schema.mediaAssets)
-      .set({ status: "ready" })
-      .where(eq(schema.mediaAssets.id, id));
     await appendEvent(d, {
       actor: userId,
-      kind: "media.ready",
+      kind: "media.screen_requested",
       subjectType: "media",
       subjectId: id,
     });
-    return ok({ id, status: "ready" });
+    return ok({ id, status: "processing" });
   } catch (e) {
     if (e instanceof AuthError) return fail("auth", e.message, e.status);
     throw e;

@@ -1,8 +1,9 @@
 import Link from "next/link";
+import { db, seriesForVenue } from "@gigit/db";
 import { performerOwnedBy, techOwnedBy, venueOwnedBy } from "@/lib/auth";
 import { sessionUserId } from "@/lib/session";
-import { ApiForm } from "@/components/ApiForm";
-import { ProfileIngestWidget } from "@/components/AiAssist";
+import { ActionButton, ApiForm, RedirectButton } from "@/components/ApiForm";
+import { GearExtractWidget, ProfileIngestWidget } from "@/components/AiAssist";
 import { MediaManager } from "@/components/MediaManager";
 
 export const dynamic = "force-dynamic";
@@ -20,13 +21,16 @@ export default async function MePage() {
     venueOwnedBy(userId),
     techOwnedBy(userId),
   ]);
+  const series = venue ? await seriesForVenue(db(), venue.id) : [];
+  const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const WEEK = ["", "first", "second", "third", "fourth", "last"];
 
   return (
     <div>
       <h1>Your profiles</h1>
       <p className="muted">
         One account can hold multiple roles — a comedian who books rooms, a
-        musician who runs sound.
+        musician who runs sound. You&apos;ll never pay to be on Gigit.
       </p>
 
       <div className="card">
@@ -38,6 +42,13 @@ export default async function MePage() {
             <Link href={`/p/${performer.id}`}>view public page</Link>
             <br />
             <span className="muted">{performer.bio}</span>
+          </p>
+          <p>
+            <RedirectButton
+              endpoint="/api/payments/connect"
+              label="Set up payouts"
+            />{" "}
+            <span className="muted">— where your money lands. Stripe handles the bank details; we never see them.</span>
           </p>
           <MediaManager subjectType="performer" />
           </>
@@ -62,6 +73,33 @@ export default async function MePage() {
 
       <div className="card">
         <h2>Venue</h2>
+        <details>
+          <summary className="muted" style={{ cursor: "pointer" }}>
+            Music licensing — what hosting live music means for your room
+          </summary>
+          <div className="muted" style={{ marginTop: 8 }}>
+            <p>
+              If acts play cover songs in your room, US law says the venue (not
+              the band) needs licenses from the performing-rights organizations
+              — ASCAP, BMI, SESAC, and GMR. For a small room that&apos;s
+              typically on the order of $1,500/year combined, scaled to your
+              capacity. It&apos;s a real obligation: ASCAP actively pursues
+              small venues, and statutory damages run far past the license
+              cost.
+            </p>
+            <p>
+              Two honest paths: budget the licenses as part of running live
+              music, or program originals-only nights (which reduces, but
+              doesn&apos;t eliminate, exposure — covers in a set are common).
+              Check whether your state restaurant association offers PRO
+              discounts; many do.
+            </p>
+            <p>
+              This is guidance, not legal advice — confirm your situation with
+              the PROs or a lawyer.
+            </p>
+          </div>
+        </details>
         {venue ? (
           <>
           <p>
@@ -70,6 +108,37 @@ export default async function MePage() {
             <br />
             <span className="muted">{venue.bio}</span>
           </p>
+          <p>
+            <RedirectButton
+              endpoint="/api/payments/setup"
+              label="Add a payment method"
+            />{" "}
+            <span className="muted">— the card charged when an act accepts your offer. Required before you can send offers.</span>
+          </p>
+          {series.length > 0 && (
+            <div>
+              <h3>Recurring nights</h3>
+              {series.map((s) => (
+                <p key={s.id}>
+                  <span className="badge">{s.defaults.format}</span>{" "}
+                  {s.pattern.freq === "weekly"
+                    ? `every ${DOW[s.pattern.dayOfWeek]}`
+                    : `${WEEK[s.pattern.week ?? 1]} ${DOW[s.pattern.dayOfWeek]} monthly`}{" "}
+                  · {s.pattern.startTimeUtc} UTC ·{" "}
+                  <span className="money">${(s.defaults.budgetCents / 100).toFixed(0)}</span>{" "}
+                  <ActionButton
+                    endpoint={`/api/series/${s.id}/cancel`}
+                    label="End series"
+                  />
+                </p>
+              ))}
+              <p className="muted">
+                Ending a series closes its future open nights. Booked nights
+                stand — they&apos;re contracts.
+              </p>
+            </div>
+          )}
+          <GearExtractWidget venueId={venue.id} />
           <MediaManager subjectType="venue" />
           </>
         ) : (

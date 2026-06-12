@@ -28,7 +28,12 @@ export default async function InboxPage() {
   return (
     <div>
       <h1>Inbox</h1>
-      {threads.length === 0 && <div className="card">No conversations yet.</div>}
+      {threads.length === 0 && (
+        <div className="card">
+          No conversations yet — they start from a slot, an application, or a
+          booking.
+        </div>
+      )}
       {threads.map((t) => (
         <div className="card" key={t.id}>
           <Link href={`/inbox/${t.id}`}>

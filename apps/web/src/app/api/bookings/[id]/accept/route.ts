@@ -2,6 +2,7 @@ import {
   ConcurrentUpdateError,
   IllegalTransitionError,
   db,
+  paymentGateway,
   runBookingTransition,
   schema,
 } from "@gigit/db";
@@ -29,6 +30,15 @@ export async function POST(_req: Request, { params }: Params) {
     if (!booking) return fail("not_found", "booking not found", 404);
     if (booking.performerId !== performer.id)
       return fail("forbidden", "not your booking", 403);
+
+    // Payout gate (spec §6): a booking must never confirm with nowhere to
+    // send the money. Null gateway (dev) always passes.
+    if (!(await paymentGateway().performerPayoutReady(performer.id)))
+      return fail(
+        "payouts_not_ready",
+        "Set up payouts first — it takes a few minutes, and your money needs somewhere to land. Go to Profile → Set up payouts.",
+        409,
+      );
 
     const result = await runBookingTransition(
       bookingId,

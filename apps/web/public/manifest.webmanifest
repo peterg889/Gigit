@@ -1,0 +1,17 @@
+{
+  "name": "Gigit",
+  "short_name": "Gigit",
+  "description": "Get the gig. Get paid. Live music, comedy, and sound for small rooms.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#171109",
+  "theme_color": "#171109",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

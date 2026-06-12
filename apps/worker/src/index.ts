@@ -13,18 +13,28 @@ import {
   getPool,
   runBookingTransition,
   paymentGateway,
+  materializeAllActiveSeries,
+  cascadeParentToSubslots,
   IllegalTransitionError,
   BookingNotFoundError,
 } from "@gigit/db";
 import type { BookingEvent, Effect } from "@gigit/domain";
 import PgBoss from "pg-boss";
-import { notifyBookingParties } from "./notify.js";
+import * as Sentry from "@sentry/node";
+import { notifyBookingParties, notifySubslotParties, notifyUser } from "./notify.js";
+import { recheckEmbeds, screenMedia } from "./media.js";
+import { outboxLagMs, reconcileMoney } from "./reconcile-money.js";
+
+if (process.env.SENTRY_DSN) Sentry.init({ dsn: process.env.SENTRY_DSN });
 
 const TIMER_QUEUE = "booking-timers";
+const REMINDER_QUEUE = "booking-reminders";
+const NIGHT_FACTS_QUEUE = "venue-night-facts";
 type TimerJob = {
   bookingId: string;
   fire: "OFFER_EXPIRED" | "GIG_ENDED" | "AUTO_CONFIRM_ELAPSED";
 };
+type ReminderJob = { bookingId: string };
 
 const jobToEvent: Record<
   "offer_expiry" | "gig_ended" | "auto_confirm",
@@ -46,6 +56,68 @@ async function main() {
   await boss.work<TimerJob>(TIMER_QUEUE, async ([job]) => {
     if (!job) return;
     await fireTimer(job.data);
+  });
+
+  // Day-before reminder (PRD F5.2 critical path): fires only if still booked.
+  await boss.createQueue(REMINDER_QUEUE);
+  await boss.work<ReminderJob>(REMINDER_QUEUE, async ([job]) => {
+    if (!job) return;
+    const { rows } = await getPool().query(
+      `select state from bookings where id = $1`,
+      [job.data.bookingId],
+    );
+    if (rows[0]?.state !== "confirmed") {
+      log("reminder.stale", { bookingId: job.data.bookingId });
+      return;
+    }
+    await notifyBookingParties(job.data.bookingId, "day_before", "both");
+    log("reminder.sent", { bookingId: job.data.bookingId });
+  });
+
+  // Nightly venue-night-facts snapshot (PRD F8.5-P0): baseline data the Phase 2
+  // ROI loop joins against. Runs at 04:10 UTC; also once at boot (idempotent)
+  // so gaps from worker downtime self-heal for yesterday.
+  await boss.createQueue(NIGHT_FACTS_QUEUE);
+  await boss.schedule(NIGHT_FACTS_QUEUE, "10 4 * * *");
+  await boss.work(NIGHT_FACTS_QUEUE, async () => snapshotNightFacts());
+  void snapshotNightFacts().catch((err) =>
+    log("nightfacts.error", { err: String(err) }),
+  );
+
+  // Daily series sweep (PRD F2.2): keep every active series at full horizon
+  // as occurrences pass. Also at boot so dev environments stay topped up.
+  const SERIES_QUEUE = "series-materialize";
+  await boss.createQueue(SERIES_QUEUE);
+  await boss.schedule(SERIES_QUEUE, "20 4 * * *");
+  await boss.work(SERIES_QUEUE, async () => {
+    const created = await materializeAllActiveSeries();
+    log("series.materialized", { created });
+  });
+  void materializeAllActiveSeries()
+    .then((created) => log("series.materialized", { created, at: "boot" }))
+    .catch((err) => log("series.error", { err: String(err) }));
+
+  // Nightly money reconciliation (spec §5 invariants): mismatches page.
+  const RECONCILE_QUEUE = "reconcile-money";
+  await boss.createQueue(RECONCILE_QUEUE);
+  await boss.schedule(RECONCILE_QUEUE, "30 4 * * *");
+  await boss.work(RECONCILE_QUEUE, async () => {
+    const mismatches = await reconcileMoney();
+    if (mismatches.length > 0) {
+      log("reconcile.MISMATCH", { count: mismatches.length, mismatches });
+      Sentry.captureMessage(`money reconciliation: ${mismatches.length} mismatches`, "error");
+    } else {
+      log("reconcile.clean", {});
+    }
+  });
+
+  // Weekly embed-rot recheck (engineering-spec §8), Mondays 05:00 UTC.
+  const EMBED_QUEUE = "embed-recheck";
+  await boss.createQueue(EMBED_QUEUE);
+  await boss.schedule(EMBED_QUEUE, "0 5 * * 1");
+  await boss.work(EMBED_QUEUE, async () => {
+    const dead = await recheckEmbeds();
+    log("embeds.rechecked", { dead });
   });
 
   void outboxLoop(boss);
@@ -166,6 +238,12 @@ async function dispatchEvent(
       case "notify":
         if (row.subject_type === "booking")
           await notifyBookingParties(row.subject_id, fx.template, fx.to);
+        else if (row.subject_type === "tech_subslot")
+          await notifySubslotParties(
+            row.subject_id,
+            fx.template,
+            fx.to as "payer" | "tech" | "both",
+          );
         else if (row.actor.startsWith("usr_"))
           // non-booking notifications (messages, applications) reach the
           // counterparty via thread participants in M2; log for now
@@ -190,6 +268,96 @@ async function dispatchEvent(
         break; // already applied in-transaction by the transition runner
     }
   }
+
+  // Media trust pipeline (PRD F7.5): the screen is the only path to `ready`.
+  if (row.kind === "media.screen_requested") {
+    await screenMedia(row.subject_id);
+  }
+
+  // Saved-search alerts (PRD F2.3): a new open slot fans out to every
+  // performer whose standing filter it matches. At-least-once like the rest
+  // of the outbox; a duplicate notification beats a missed gig.
+  if (row.kind === "slot.created") {
+    const { rows: matches } = await getPool().query(
+      `select distinct p.owner_user_id
+         from saved_searches ss
+         join performers p on p.id = ss.performer_id
+         join slots s on s.id = $1
+        where (ss.format is null or ss.format = s.format or s.format = 'either')
+          and (ss.metro is null or ss.metro = s.metro)
+          and (ss.min_budget_cents is null or s.budget_cents >= ss.min_budget_cents)`,
+      [row.subject_id],
+    );
+    for (const m of matches) {
+      await notifyUser(m.owner_user_id, "slot_match");
+    }
+    if (matches.length > 0)
+      log("alerts.slot_match", { slot: row.subject_id, notified: matches.length });
+  }
+
+  // Parent booking outcomes cascade into tech sub-slots (PRD F6.2): release
+  // pays the tech; cancellation applies the same fee schedule.
+  if (row.kind === "booking.transition") {
+    const to = (row.payload as { to?: string }).to;
+    if (to === "released")
+      await cascadeParentToSubslots(row.subject_id, "released", "worker");
+    else if (to === "cancelled_by_venue" || to === "cancelled_by_performer")
+      await cascadeParentToSubslots(row.subject_id, "cancelled", "worker");
+  }
+
+  // Entering `confirmed` arms the day-before reminder (not a state transition,
+  // so it lives here in the fan-out, not in the domain reducer).
+  if (
+    row.kind === "booking.transition" &&
+    (row.payload as { to?: string }).to === "confirmed"
+  ) {
+    const { rows } = await getPool().query(
+      `select terms->>'startsAt' as starts_at from bookings where id = $1`,
+      [row.subject_id],
+    );
+    const startsAt = rows[0] ? new Date(rows[0].starts_at).getTime() : 0;
+    const remindAt = startsAt - 24 * 3_600_000;
+    if (remindAt > Date.now()) {
+      await boss.send(
+        REMINDER_QUEUE,
+        { bookingId: row.subject_id },
+        {
+          startAfter: new Date(remindAt),
+          singletonKey: `${row.subject_id}:day_before`,
+          retryLimit: 5,
+          retryBackoff: true,
+        },
+      );
+    }
+  }
+}
+
+/** One row per venue per night (yesterday, UTC) — gig or not. Idempotent. */
+async function snapshotNightFacts() {
+  const yesterday = new Date(Date.now() - 24 * 3_600_000)
+    .toISOString()
+    .slice(0, 10);
+  const { rowCount } = await getPool().query(
+    `insert into venue_night_facts
+       (venue_id, night_date, day_of_week, had_booking, booking_id, format, budget_cents)
+     select v.id, $1::text, extract(dow from $1::date)::int,
+            b.id is not null, b.id, s.format, (b.terms->>'amountCents')::int
+       from venues v
+       left join lateral (
+         select * from bookings bk
+          where bk.venue_id = v.id
+            and bk.state in ('confirmed','awaiting_confirmation','released',
+                             'disputed','partially_released')
+            and (bk.terms->>'startsAt')::timestamptz >= $1::date
+            and (bk.terms->>'startsAt')::timestamptz < ($1::date + interval '1 day')
+          order by (bk.terms->>'startsAt')::timestamptz
+          limit 1
+       ) b on true
+       left join slots s on s.id = b.slot_id
+     on conflict (venue_id, night_date) do nothing`,
+    [yesterday],
+  );
+  log("nightfacts.snapshot", { night: yesterday, inserted: rowCount ?? 0 });
 }
 
 async function fireBookingEvent(bookingId: string, event: BookingEvent) {
@@ -224,6 +392,17 @@ async function reconcileLoop(boss: PgBoss) {
       }
     } catch (err) {
       log("reconcile.error", { err: String(err) });
+    }
+    // Outbox health: undispatched events older than 5 min mean the fan-out
+    // is wedged — that's a page, not a curiosity.
+    try {
+      const lag = await outboxLagMs();
+      if (lag > 5 * 60_000) {
+        log("outbox.LAGGING", { lagMs: lag });
+        Sentry.captureMessage(`outbox lag ${Math.round(lag / 1000)}s`, "error");
+      }
+    } catch {
+      /* health check must never kill the loop */
     }
     await sleep(10 * 60 * 1000);
   }
